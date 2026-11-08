@@ -13,6 +13,11 @@ class VendorSnapshotTests(unittest.TestCase):
         self.assertIn("2429c28a96e7a84ef7097ff4cd755694d0ab8d0d", upstream)
 
     def test_clone_tracks_upstream_repository(self):
+        probe = subprocess.run(
+            ["git", "-C", str(ROOT), "remote"], text=True, capture_output=True
+        )
+        if "upstream" not in probe.stdout.split():
+            self.skipTest("no upstream remote in this checkout (e.g. CI clone)")
         result = subprocess.run(
             ["git", "-C", str(ROOT), "remote", "get-url", "upstream"],
             text=True,
