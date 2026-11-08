@@ -1,4 +1,4 @@
-// language: Objective-C, file: ZyncURIFilter.m, target: iOS 15.1+ (Zalo 26.11.01, arm64)
+// language: Objective-C, file: ZLModURIFilter.m, target: iOS 15.1+ (Zalo 26.11.01, arm64)
 // In-process URL blocking for telemetry and ad endpoints (NSURLProtocol layer).
 // Patterns verified against the Zalo 26.11.01 binary:
 //   %@/tracking, %@/tracking-v3, https://log.api.zaloapp.com/tracking(-rt)
@@ -8,12 +8,12 @@
 // valid empty response instead of a network error (no retry storms).
 // Note: WKWebView traffic runs out-of-process and is not covered.
 
-#import "Zync.h"
+#import "ZLMod.h"
 
 static BOOL gBlockTracking = NO;
 static BOOL gBlockAds = NO;
 
-static BOOL ZyncURLIsTracking(NSURL *url) {
+static BOOL ZLModURLIsTracking(NSURL *url) {
     NSString *host = url.host.lowercaseString;
     NSString *path = url.path ?: @"";
     if ([host isEqualToString:@"log.api.zaloapp.com"]) return YES;
@@ -23,7 +23,7 @@ static BOOL ZyncURLIsTracking(NSURL *url) {
     return NO;
 }
 
-static BOOL ZyncURLIsAd(NSURL *url) {
+static BOOL ZLModURLIsAd(NSURL *url) {
     NSString *host = url.host.lowercaseString;
     NSString *path = url.path ?: @"";
     if ([host isEqualToString:@"ads.platform.zalo.me"]) return YES;
@@ -35,18 +35,18 @@ static BOOL ZyncURLIsAd(NSURL *url) {
     return NO;
 }
 
-@interface ZyncBlockURLProtocol : NSURLProtocol
+@interface ZLModBlockURLProtocol : NSURLProtocol
 @end
 
-@implementation ZyncBlockURLProtocol
+@implementation ZLModBlockURLProtocol
 
 + (BOOL)canInitWithRequest:(NSURLRequest *)request {
     if (!request.URL) return NO;
     NSString *scheme = request.URL.scheme.lowercaseString;
     if (!([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"])) return NO;
-    if ([NSURLProtocol propertyForKey:@"ZyncHandled" inRequest:request]) return NO;
-    if (gBlockTracking && ZyncURLIsTracking(request.URL)) return YES;
-    if (gBlockAds && ZyncURLIsAd(request.URL)) return YES;
+    if ([NSURLProtocol propertyForKey:@"ZLModHandled" inRequest:request]) return NO;
+    if (gBlockTracking && ZLModURLIsTracking(request.URL)) return YES;
+    if (gBlockAds && ZLModURLIsAd(request.URL)) return YES;
     return NO;
 }
 
@@ -57,10 +57,10 @@ static BOOL ZyncURLIsAd(NSURL *url) {
 - (void)startLoading {
     NSMutableURLRequest *mutableRequest = [self.request mutableCopy];
     if (mutableRequest) {
-        [NSURLProtocol setProperty:@YES forKey:@"ZyncHandled" inRequest:mutableRequest];
+        [NSURLProtocol setProperty:@YES forKey:@"ZLModHandled" inRequest:mutableRequest];
     }
-    NSString *blocked = (gBlockTracking && ZyncURLIsTracking(self.request.URL)) ? @"tracking" : @"ads";
-    ZYNC_LOG(@"blocked %@ endpoint: %@%@", blocked, self.request.URL.host, self.request.URL.path);
+    NSString *blocked = (gBlockTracking && ZLModURLIsTracking(self.request.URL)) ? @"tracking" : @"ads";
+    ZLMOD_LOG(@"blocked %@ endpoint: %@%@", blocked, self.request.URL.host, self.request.URL.path);
     NSHTTPURLResponse *response =
         [[NSHTTPURLResponse alloc] initWithURL:self.request.URL
                                     statusCode:204
@@ -75,19 +75,22 @@ static BOOL ZyncURLIsAd(NSURL *url) {
 
 @end
 
-static void ZyncURIFilterRefresh(void) {
-    gBlockTracking = [[ZyncPreferences shared] boolForKey:kZyncBlockTracking];
-    gBlockAds = [[ZyncPreferences shared] boolForKey:kZyncBlockAdRequests];
+static void ZLModURIFilterRefresh(void) {
+    gBlockTracking = [[ZLModPreferences shared] boolForKey:kZLModBlockTracking];
+    gBlockAds = [[ZLModPreferences shared] boolForKey:kZLModBlockAdRequests];
 }
 
-void ZyncURIFilterInstall(void) {
-    ZyncURIFilterRefresh();
-    [[NSNotificationCenter defaultCenter] addObserverForName:ZyncPrefsDidChangeNotification
+void ZLModURIFilterInstall(void) {
+    ZLModURIFilterRefresh();
+    [[NSNotificationCenter defaultCenter] addObserverForName:ZLModPrefsDidChangeNotification
                                                       object:nil
                                                        queue:nil
                                                   usingBlock:^(NSNotification *note) {
-        ZyncURIFilterRefresh();
+        ZLModURIFilterRefresh();
     }];
-    [NSURLProtocol registerClass:[ZyncBlockURLProtocol class]];
-    ZYNC_LOG(@"URL filter installed (tracking=%d ads=%d)", gBlockTracking, gBlockAds);
+    BOOL registered = [NSURLProtocol registerClass:[ZLModBlockURLProtocol class]];
+    ZLModSetModuleStatus(@"URIFilter",
+                         registered ? ZLModModuleStatusHookInstalled : ZLModModuleStatusNotInstalled,
+                         registered ? @"NSURLProtocol registered (in-process)" : @"NSURLProtocol registration failed");
+    ZLMOD_LOG(@"URL filter installed (tracking=%d ads=%d)", gBlockTracking, gBlockAds);
 }

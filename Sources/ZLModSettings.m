@@ -1,18 +1,18 @@
-// language: Objective-C, file: ZyncSettings.m, target: iOS 15.1+ (Zalo 26.11.01, arm64)
-// Native Settings integration — injects "Zync Customize" as a cloned sibling of
+// language: Objective-C, file: ZLModSettings.m, target: iOS 15.1+ (Zalo 26.11.01, arm64)
+// Native Settings integration — injects "ZLMod Customize" as a cloned sibling of
 // the "Account and security" row inside SettingUI40TableViewController (the
 // settings hub class that owns accountAndSecurityObject / _accountAndSecurityObject).
 //
 // Primary tier: deep-copy the real cell object, retitle it, insert it directly
 // above "Account and security" in the arranged content, and intercept row
-// selection to push the Zync dashboard. The row that ships is a genuine Zalo
+// selection to push the ZLMod dashboard. The row that ships is a genuine Zalo
 // cell object — identical height, padding, typography, separator and behaviour.
 //
 // Fallback tier (only if the model cannot be reached): one extra row injected
 // via numberOfRows/cellForRow interception using a Zalo cell class when it can
 // be instantiated, otherwise a standard grouped cell.
 
-#import "Zync.h"
+#import "ZLMod.h"
 
 #pragma mark - State
 
@@ -23,7 +23,7 @@ static BOOL gFallbackActive = NO;
 static NSUInteger gInjectAttempts = 0;
 static Class gSettingsClass = Nil;
 
-static NSArray<NSString *> *ZyncKnownAccountTitleValues(void) {
+static NSArray<NSString *> *ZLModKnownAccountTitleValues(void) {
     return @[@"Tài khoản và bảo mật",
              @"Account and security",
              @"00Zh8W",
@@ -31,16 +31,16 @@ static NSArray<NSString *> *ZyncKnownAccountTitleValues(void) {
              @"tabme_account_security"];
 }
 
-static void ZyncEnsureRow(id vc);
-static char ZyncRetryCountKey;
-static const NSUInteger kZyncMaxBFNodes = 4000;
+static void ZLModEnsureRow(id vc);
+static char ZLModRetryCountKey;
+static const NSUInteger kZLModMaxBFNodes = 4000;
 
 // class_copyIvarList only returns ivars declared on the exact class — model,
 // cell and category state in Zalo lives on superclasses (e.g. model/actions
 // on BasicSettingTableViewController, title on BasicSettingCellV2Object
 // parents). Walk the full chain so discovery, cloning and retitling all see
 // inherited state.
-static NSArray<NSValue *> *ZyncAllIvars(Class cls) {
+static NSArray<NSValue *> *ZLModAllIvars(Class cls) {
     NSMutableArray<NSValue *> *list = [NSMutableArray array];
     Class current = cls;
     while (current && current != [NSObject class]) {
@@ -59,12 +59,12 @@ static NSArray<NSValue *> *ZyncAllIvars(Class cls) {
 
 // object_setIvar does not retain; ARC-managed ivars will release on dealloc.
 // Retain once here so the clone owns exactly one reference, like a normal assignment.
-static void ZyncSetIvarRetained(id object, Ivar ivar, id value) {
+static void ZLModSetIvarRetained(id object, Ivar ivar, id value) {
     if (value) CFRetain((__bridge CFTypeRef)value);
     object_setIvar(object, ivar, value);
 }
 
-static id ZyncCloneCellObject(id source) {
+static id ZLModCloneCellObject(id source) {
     if (!source) return nil;
     Class cls = object_getClass(source);
     if (!cls) return nil;
@@ -81,14 +81,14 @@ static id ZyncCloneCellObject(id source) {
     @try { clone = [[cls alloc] init]; } @catch (__unused NSException *e) { return nil; }
     if (!clone) return nil;
 
-    for (NSValue *boxed in ZyncAllIvars(cls)) {
+    for (NSValue *boxed in ZLModAllIvars(cls)) {
         Ivar ivar = (Ivar)boxed.pointerValue;
         const char *type = ivar_getTypeEncoding(ivar);
         if (!type || type[0] == '\0') continue;
         if (type[0] == '@') {
             @try {
                 id value = object_getIvar(source, ivar);
-                if (value) ZyncSetIvarRetained(clone, ivar, value);
+                if (value) ZLModSetIvarRetained(clone, ivar, value);
             } @catch (__unused NSException *e) {}
         } else {
             NSUInteger size = 0;
@@ -103,12 +103,12 @@ static id ZyncCloneCellObject(id source) {
     return clone;
 }
 
-static BOOL ZyncRetitleCellObject(id object, NSString *newTitle, NSString **outOldValue) {
+static BOOL ZLModRetitleCellObject(id object, NSString *newTitle, NSString **outOldValue) {
     if (!object) return NO;
-    NSArray<NSString *> *known = ZyncKnownAccountTitleValues();
+    NSArray<NSString *> *known = ZLModKnownAccountTitleValues();
     Class cls = object_getClass(object);
     BOOL done = NO;
-    for (NSValue *boxed in ZyncAllIvars(cls)) {
+    for (NSValue *boxed in ZLModAllIvars(cls)) {
         if (done) break;
         Ivar ivar = (Ivar)boxed.pointerValue;
         const char *type = ivar_getTypeEncoding(ivar);
@@ -118,7 +118,7 @@ static BOOL ZyncRetitleCellObject(id object, NSString *newTitle, NSString **outO
         if (![value isKindOfClass:[NSString class]]) continue;
         if ([known containsObject:value]) {
             if (outOldValue) *outOldValue = value;
-            @try { ZyncSetIvarRetained(object, ivar, newTitle); } @catch (__unused NSException *e) { continue; }
+            @try { ZLModSetIvarRetained(object, ivar, newTitle); } @catch (__unused NSException *e) { continue; }
             done = YES;
         }
     }
@@ -128,7 +128,7 @@ static BOOL ZyncRetitleCellObject(id object, NSString *newTitle, NSString **outO
             @try {
                 id value = [object valueForKey:key];
                 if ([value isKindOfClass:[NSString class]] &&
-                    ([ZyncKnownAccountTitleValues() containsObject:value] || [value containsString:@"account_security"])) {
+                    ([ZLModKnownAccountTitleValues() containsObject:value] || [value containsString:@"account_security"])) {
                     [object setValue:newTitle forKey:key];
                     done = YES;
                     break;
@@ -141,19 +141,19 @@ static BOOL ZyncRetitleCellObject(id object, NSString *newTitle, NSString **outO
 
 #pragma mark - Model discovery
 
-@interface ZyncBFSNode : NSObject
+@interface ZLModBFSNode : NSObject
 @property (nonatomic, strong) id node;
 @property (nonatomic, strong) id parent;
-@property (nonatomic, strong) ZyncBFSNode *parentEntry;
+@property (nonatomic, strong) ZLModBFSNode *parentEntry;
 @property (nonatomic, assign) NSUInteger indexInParent;
 @property (nonatomic, strong) id keyInParent;
 @property (nonatomic, assign) Ivar parentIvar;
 @end
 
-@implementation ZyncBFSNode
+@implementation ZLModBFSNode
 @end
 
-static BOOL ZyncSkipTraversalClass(id node) {
+static BOOL ZLModSkipTraversalClass(id node) {
     return [node isKindOfClass:[NSString class]] || [node isKindOfClass:[NSNumber class]] ||
            [node isKindOfClass:[NSData class]] || [node isKindOfClass:[NSDate class]] ||
            [node isKindOfClass:[NSURL class]] || [node isKindOfClass:[NSSet class]] ||
@@ -161,21 +161,21 @@ static BOOL ZyncSkipTraversalClass(id node) {
            [node isKindOfClass:[UIView class]] || [node isKindOfClass:[UIViewController class]];
 }
 
-static NSMutableArray<ZyncBFSNode *> *ZyncCollectCandidates(id root, NSUInteger maxDepth) {
-    NSMutableArray<ZyncBFSNode *> *all = [NSMutableArray array];
-    NSMutableArray<ZyncBFSNode *> *queue = [NSMutableArray array];
+static NSMutableArray<ZLModBFSNode *> *ZLModCollectCandidates(id root, NSUInteger maxDepth) {
+    NSMutableArray<ZLModBFSNode *> *all = [NSMutableArray array];
+    NSMutableArray<ZLModBFSNode *> *queue = [NSMutableArray array];
     NSMutableSet<NSValue *> *seen = [NSMutableSet set];
 
-    ZyncBFSNode *rootNode = [ZyncBFSNode new];
+    ZLModBFSNode *rootNode = [ZLModBFSNode new];
     rootNode.node = root;
     [queue addObject:rootNode];
 
     NSUInteger depth = 0;
-    while (queue.count > 0 && depth < maxDepth && all.count < kZyncMaxBFNodes) {
-        NSMutableArray<ZyncBFSNode *> *next = [NSMutableArray array];
-        for (ZyncBFSNode *entry in queue) {
+    while (queue.count > 0 && depth < maxDepth && all.count < kZLModMaxBFNodes) {
+        NSMutableArray<ZLModBFSNode *> *next = [NSMutableArray array];
+        for (ZLModBFSNode *entry in queue) {
             id node = entry.node;
-            if (!node || ZyncSkipTraversalClass(node)) continue;
+            if (!node || ZLModSkipTraversalClass(node)) continue;
             NSValue *ptr = [NSValue valueWithPointer:(__bridge const void *)node];
             if ([seen containsObject:ptr]) continue;
             [seen addObject:ptr];
@@ -185,8 +185,8 @@ static NSMutableArray<ZyncBFSNode *> *ZyncCollectCandidates(id root, NSUInteger 
                 NSArray *array = node;
                 for (NSUInteger i = 0; i < array.count; i++) {
                     id child = array[i];
-                    if (!child || ZyncSkipTraversalClass(child)) continue;
-                    ZyncBFSNode *n = [ZyncBFSNode new];
+                    if (!child || ZLModSkipTraversalClass(child)) continue;
+                    ZLModBFSNode *n = [ZLModBFSNode new];
                     n.node = child;
                     n.parent = node;
                     n.parentEntry = entry;
@@ -197,8 +197,8 @@ static NSMutableArray<ZyncBFSNode *> *ZyncCollectCandidates(id root, NSUInteger 
                 NSDictionary *dict = node;
                 for (id key in dict) {
                     id child = dict[key];
-                    if (!child || ZyncSkipTraversalClass(child)) continue;
-                    ZyncBFSNode *n = [ZyncBFSNode new];
+                    if (!child || ZLModSkipTraversalClass(child)) continue;
+                    ZLModBFSNode *n = [ZLModBFSNode new];
                     n.node = child;
                     n.parent = node;
                     n.parentEntry = entry;
@@ -206,14 +206,14 @@ static NSMutableArray<ZyncBFSNode *> *ZyncCollectCandidates(id root, NSUInteger 
                     [next addObject:n];
                 }
             } else {
-                for (NSValue *boxed in ZyncAllIvars(object_getClass(node))) {
+                for (NSValue *boxed in ZLModAllIvars(object_getClass(node))) {
                     Ivar ivar = (Ivar)boxed.pointerValue;
                     const char *type = ivar_getTypeEncoding(ivar);
                     if (!type || type[0] != '@') continue;
                     id child = nil;
                     @try { child = object_getIvar(node, ivar); } @catch (__unused NSException *e) { continue; }
-                    if (!child || ZyncSkipTraversalClass(child)) continue;
-                    ZyncBFSNode *n = [ZyncBFSNode new];
+                    if (!child || ZLModSkipTraversalClass(child)) continue;
+                    ZLModBFSNode *n = [ZLModBFSNode new];
                     n.node = child;
                     n.parent = node;
                     n.parentEntry = entry;
@@ -231,7 +231,7 @@ static NSMutableArray<ZyncBFSNode *> *ZyncCollectCandidates(id root, NSUInteger 
 // Places `value` into the slot that currently holds `child.node` (parent object
 // via ivar, or parent collection via index/key). Returns NO when the parent is
 // an immutable collection (caller must climb one level and retry with a copy).
-static BOOL ZyncPlaceValue(id value, ZyncBFSNode *child) {
+static BOOL ZLModPlaceValue(id value, ZLModBFSNode *child) {
     id parent = child.parent;
     @try {
         if ([parent isKindOfClass:[NSMutableArray class]]) {
@@ -243,7 +243,7 @@ static BOOL ZyncPlaceValue(id value, ZyncBFSNode *child) {
             return YES;
         }
         if (child.parentIvar != NULL) {
-            ZyncSetIvarRetained(parent, child.parentIvar, value);
+            ZLModSetIvarRetained(parent, child.parentIvar, value);
             return YES;
         }
     } @catch (__unused NSException *e) {}
@@ -253,16 +253,16 @@ static BOOL ZyncPlaceValue(id value, ZyncBFSNode *child) {
 // Walks up from the matched array, converting every immutable ancestor
 // (array/dictionary) into a mutable copy that is re-linked into its own parent,
 // so the returned NSMutableArray is reachable from the live object graph.
-static NSMutableArray *ZyncMakeMutableChain(ZyncBFSNode *match) {
+static NSMutableArray *ZLModMakeMutableChain(ZLModBFSNode *match) {
     id node = match.node;
     if (![node isKindOfClass:[NSArray class]]) return nil;
 
     id value = [node isKindOfClass:[NSMutableArray class]] ? node : [node mutableCopy];
     if (![value isKindOfClass:[NSMutableArray class]]) return nil;
 
-    ZyncBFSNode *child = match;
+    ZLModBFSNode *child = match;
     while (child) {
-        if (ZyncPlaceValue(value, child)) return (NSMutableArray *)value;
+        if (ZLModPlaceValue(value, child)) return (NSMutableArray *)value;
 
         id parent = child.parent;
         if (![parent isKindOfClass:[NSArray class]] && ![parent isKindOfClass:[NSDictionary class]]) return nil;
@@ -281,17 +281,17 @@ static NSMutableArray *ZyncMakeMutableChain(ZyncBFSNode *match) {
     return nil;
 }
 
-static NSMutableArray *ZyncFindContainerForObject(id root, id target, NSUInteger *outIndex) {
-    NSMutableArray<ZyncBFSNode *> *nodes = ZyncCollectCandidates(root, 7);
-    for (ZyncBFSNode *entry in nodes) {
+static NSMutableArray *ZLModFindContainerForObject(id root, id target, NSUInteger *outIndex) {
+    NSMutableArray<ZLModBFSNode *> *nodes = ZLModCollectCandidates(root, 7);
+    for (ZLModBFSNode *entry in nodes) {
         id node = entry.node;
         if (![node isKindOfClass:[NSArray class]]) continue;
         if ([node indexOfObjectIdenticalTo:target] == NSNotFound) continue;
 
-        NSMutableArray *container = ZyncMakeMutableChain(entry);
+        NSMutableArray *container = ZLModMakeMutableChain(entry);
         if (!container) continue;
         if (outIndex) *outIndex = [container indexOfObjectIdenticalTo:target];
-        ZYNC_LOG(@"ensure: container found via ivar graph");
+        ZLMOD_LOG(@"ensure: container found via ivar graph");
         return container;
     }
 
@@ -301,40 +301,40 @@ static NSMutableArray *ZyncFindContainerForObject(id root, id target, NSUInteger
     SEL arrangedSel = sel_registerName("getArrangedTableContent");
     if (root && [root respondsToSelector:arrangedSel]) {
         id arranged = nil;
-        @try { arranged = [root performSelector:arrangedSel]; } @catch (__unused NSException *e) {}
+        @try { IMP arrangedImp = [root methodForSelector:arrangedSel]; if (arrangedImp) arranged = ((id (*)(id, SEL))arrangedImp)(root, arrangedSel); } @catch (__unused NSException *e) {}
         if (arranged && arranged != root) {
             if ([arranged isKindOfClass:[NSMutableArray class]] &&
                 [arranged indexOfObjectIdenticalTo:target] != NSNotFound) {
                 if (outIndex) *outIndex = [arranged indexOfObjectIdenticalTo:target];
-                ZYNC_LOG(@"ensure: container via getArrangedTableContent (mutable root)");
+                ZLMOD_LOG(@"ensure: container via getArrangedTableContent (mutable root)");
                 return arranged;
             }
-            NSMutableArray<ZyncBFSNode *> *subNodes = ZyncCollectCandidates(arranged, 4);
-            for (ZyncBFSNode *entry in subNodes) {
+            NSMutableArray<ZLModBFSNode *> *subNodes = ZLModCollectCandidates(arranged, 4);
+            for (ZLModBFSNode *entry in subNodes) {
                 id node = entry.node;
                 if (![node isKindOfClass:[NSArray class]]) continue;
                 if ([node indexOfObjectIdenticalTo:target] == NSNotFound) continue;
-                NSMutableArray *container = ZyncMakeMutableChain(entry);
+                NSMutableArray *container = ZLModMakeMutableChain(entry);
                 if (!container) continue;
                 if (outIndex) *outIndex = [container indexOfObjectIdenticalTo:target];
-                ZYNC_LOG(@"ensure: container via getArrangedTableContent");
+                ZLMOD_LOG(@"ensure: container via getArrangedTableContent");
                 return container;
             }
-            ZYNC_LOG(@"ensure: getArrangedTableContent reachable but no mutable container");
+            ZLMOD_LOG(@"ensure: getArrangedTableContent reachable but no mutable container");
         }
     }
-    ZYNC_LOG(@"ensure: container not found");
+    ZLMOD_LOG(@"ensure: container not found");
     return nil;
 }
 
-static id ZyncFetchAccountObject(id vc) {
+static id ZLModFetchAccountObject(id vc) {
     if (!vc) return nil;
     @try {
         id value = [vc valueForKey:@"accountAndSecurityObject"];
         if (value) return value;
     } @catch (__unused NSException *e) {}
 
-    for (NSValue *boxed in ZyncAllIvars(object_getClass(vc))) {
+    for (NSValue *boxed in ZLModAllIvars(object_getClass(vc))) {
         Ivar ivar = (Ivar)boxed.pointerValue;
         const char *name = ivar_getName(ivar);
         if (name && strcmp(name, "_accountAndSecurityObject") == 0) {
@@ -348,10 +348,10 @@ static id ZyncFetchAccountObject(id vc) {
 
 #pragma mark - Snapshot (for row mapping)
 
-static void ZyncRefreshSnapshot(id vc) {
+static void ZLModRefreshSnapshot(id vc) {
     NSMutableArray<NSArray *> *sections = [NSMutableArray array];
-    NSMutableArray<ZyncBFSNode *> *nodes = ZyncCollectCandidates(vc, 7);
-    for (ZyncBFSNode *entry in nodes) {
+    NSMutableArray<ZLModBFSNode *> *nodes = ZLModCollectCandidates(vc, 7);
+    for (ZLModBFSNode *entry in nodes) {
         id node = entry.node;
         if (![node isKindOfClass:[NSArray class]]) continue;
         NSArray *array = node;
@@ -384,56 +384,56 @@ static void ZyncRefreshSnapshot(id vc) {
 
 #pragma mark - Injection
 
-static BOOL ZyncInjectRow(id vc) {
+static BOOL ZLModInjectRow(id vc) {
     if (gOurRow) return YES;
-    id accountObject = ZyncFetchAccountObject(vc);
-    ZYNC_LOG(@"ensure: accountObject=%@",
+    id accountObject = ZLModFetchAccountObject(vc);
+    ZLMOD_LOG(@"ensure: accountObject=%@",
              accountObject ? NSStringFromClass(object_getClass(accountObject)) : @"<nil>");
     if (!accountObject) return NO;
 
     NSUInteger accountIndex = 0;
-    NSMutableArray *container = ZyncFindContainerForObject(vc, accountObject, &accountIndex);
-    ZYNC_LOG(@"ensure: container=%@ count=%lu index=%lu",
+    NSMutableArray *container = ZLModFindContainerForObject(vc, accountObject, &accountIndex);
+    ZLMOD_LOG(@"ensure: container=%@ count=%lu index=%lu",
              container ? NSStringFromClass(object_getClass(container)) : @"<nil>",
              (unsigned long)container.count, (unsigned long)accountIndex);
     if (!container) return NO;
 
-    id clone = ZyncCloneCellObject(accountObject);
-    ZYNC_LOG(@"ensure: clone=%@", clone ? NSStringFromClass(object_getClass(clone)) : @"<nil>");
+    id clone = ZLModCloneCellObject(accountObject);
+    ZLMOD_LOG(@"ensure: clone=%@", clone ? NSStringFromClass(object_getClass(clone)) : @"<nil>");
     if (!clone) return NO;
     NSString *oldTitle = nil;
-    if (!ZyncRetitleCellObject(clone, @"Zync Customize", &oldTitle)) {
-        ZYNC_LOG(@"ensure: retitle failed (old=%@) — row not injected", oldTitle ? oldTitle : @"<nil>");
+    if (!ZLModRetitleCellObject(clone, @"ZLMod Customize", &oldTitle)) {
+        ZLMOD_LOG(@"ensure: retitle failed (old=%@) — row not injected", oldTitle ? oldTitle : @"<nil>");
         return NO;
     }
-    ZYNC_LOG(@"ensure: retitled %@ -> Zync Customize", oldTitle ? oldTitle : @"<unknown>");
+    ZLMOD_LOG(@"ensure: retitled %@ -> ZLMod Customize", oldTitle ? oldTitle : @"<unknown>");
 
     NSUInteger insertIndex = MIN(accountIndex, container.count);
     @try {
         [container insertObject:clone atIndex:insertIndex];
     } @catch (__unused NSException *e) {
-        ZYNC_LOG(@"ensure: insert threw");
+        ZLMOD_LOG(@"ensure: insert threw");
         return NO;
     }
 
     gOurRow = clone;
     gFallbackActive = NO;
-    ZyncRefreshSnapshot(vc);
+    ZLModRefreshSnapshot(vc);
     BOOL visibleInSnapshot = NO;
     if (gSectionSnapshot) {
         for (NSArray *array in gSectionSnapshot) {
             if ([array indexOfObjectIdenticalTo:gOurRow] != NSNotFound) { visibleInSnapshot = YES; break; }
         }
     }
-    ZYNC_LOG(@"ensure: Zync Customize row injected at index %lu (visible-in-snapshot=%d)",
+    ZLMOD_LOG(@"ensure: ZLMod Customize row injected at index %lu (visible-in-snapshot=%d)",
              (unsigned long)insertIndex, visibleInSnapshot);
     return YES;
 }
 
-static void ZyncReloadTable(id vc) {
+static void ZLModReloadTable(id vc) {
     if (![NSThread isMainThread]) {
         __weak id weakVC = vc;
-        dispatch_async(dispatch_get_main_queue(), ^{ ZyncReloadTable(weakVC); });
+        dispatch_async(dispatch_get_main_queue(), ^{ ZLModReloadTable(weakVC); });
         return;
     }
     UITableView *tv = nil;
@@ -448,7 +448,7 @@ static void ZyncReloadTable(id vc) {
     if (tv) [tv reloadData];
 }
 
-static UITableView *ZyncTableViewForVC(id vc) {
+static UITableView *ZLModTableViewForVC(id vc) {
     if (!vc) return nil;
     UITableView *tv = nil;
     if ([vc isKindOfClass:[UITableViewController class]]) {
@@ -462,7 +462,7 @@ static UITableView *ZyncTableViewForVC(id vc) {
     return tv;
 }
 
-static BOOL ZyncTableReady(id vc) {
+static BOOL ZLModTableReady(id vc) {
     UITableView *tv = nil;
     if ([vc isKindOfClass:[UITableViewController class]]) {
         tv = [(UITableViewController *)vc tableView];
@@ -470,24 +470,24 @@ static BOOL ZyncTableReady(id vc) {
     return tv != nil && [tv numberOfSections] > 0;
 }
 
-static void ZyncScheduleRetry(id vc) {
+static void ZLModScheduleRetry(id vc) {
     if (gOurRow || gFallbackActive) return;
-    NSNumber *doneNum = objc_getAssociatedObject(vc, &ZyncRetryCountKey);
+    NSNumber *doneNum = objc_getAssociatedObject(vc, &ZLModRetryCountKey);
     NSInteger tries = doneNum ? doneNum.integerValue : 0;
     if (tries >= 2) return;
-    objc_setAssociatedObject(vc, &ZyncRetryCountKey, @(tries + 1), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(vc, &ZLModRetryCountKey, @(tries + 1), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     NSTimeInterval delay = tries == 0 ? 1.0 : 3.0;
-    ZYNC_LOG(@"ensure: retry %ld in %.0fs", (long)(tries + 1), delay);
+    ZLMOD_LOG(@"ensure: retry %ld in %.0fs", (long)(tries + 1), delay);
     __weak id weakVC = vc;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (weakVC && !gOurRow && !gFallbackActive) {
-            @try { ZyncEnsureRow(weakVC); } @catch (__unused NSException *e) {}
+            @try { ZLModEnsureRow(weakVC); } @catch (__unused NSException *e) {}
         }
     });
 }
 
-static void ZyncEnsureRow(id vc) {
+static void ZLModEnsureRow(id vc) {
     if (!vc) return;
     if (gOurRow) {
         // Re-insert if the model was rebuilt without our row.
@@ -499,42 +499,42 @@ static void ZyncEnsureRow(id vc) {
         }
         if (!stillPresent) {
             gInjectAttempts++;
-            id accountObject = ZyncFetchAccountObject(vc);
+            id accountObject = ZLModFetchAccountObject(vc);
             NSUInteger idx = 0;
-            NSMutableArray *container = accountObject ? ZyncFindContainerForObject(vc, accountObject, &idx) : nil;
+            NSMutableArray *container = accountObject ? ZLModFindContainerForObject(vc, accountObject, &idx) : nil;
             if (container) {
                 if ([container indexOfObjectIdenticalTo:gOurRow] == NSNotFound) {
                     BOOL inserted = NO;
                     @try { [container insertObject:gOurRow atIndex:MIN(idx, container.count)]; inserted = YES; } @catch (__unused NSException *e) {}
-                    ZYNC_LOG(@"ensure: re-inserted row=%d", inserted);
-                    if (inserted) ZyncReloadTable(vc);
+                    ZLMOD_LOG(@"ensure: re-inserted row=%d", inserted);
+                    if (inserted) ZLModReloadTable(vc);
                 }
             } else {
-                ZYNC_LOG(@"ensure: model gone — clearing row for re-clone");
+                ZLMOD_LOG(@"ensure: model gone — clearing row for re-clone");
                 gOurRow = nil; // model gone; re-clone next pass
             }
         }
-        ZyncRefreshSnapshot(vc);
-        if (!gOurRow) ZyncInjectRow(vc);
+        ZLModRefreshSnapshot(vc);
+        if (!gOurRow) ZLModInjectRow(vc);
         return;
     }
 
     gInjectAttempts++;
     BOOL injected = NO;
-    @try { injected = ZyncInjectRow(vc); } @catch (__unused NSException *e) { injected = NO; }
+    @try { injected = ZLModInjectRow(vc); } @catch (__unused NSException *e) { injected = NO; }
     if (injected) {
         // Per-VC retry count (associated object) resets on primary success;
         // the global attempt counter remains a backstop only and never gates
         // fallback on its own (see below).
-        objc_setAssociatedObject(vc, &ZyncRetryCountKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ZyncReloadTable(vc);
+        objc_setAssociatedObject(vc, &ZLModRetryCountKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ZLModReloadTable(vc);
     } else {
-        NSNumber *doneNum = objc_getAssociatedObject(vc, &ZyncRetryCountKey);
+        NSNumber *doneNum = objc_getAssociatedObject(vc, &ZLModRetryCountKey);
         NSInteger tries = doneNum ? doneNum.integerValue : 0;
-        UITableView *tableView = ZyncTableViewForVC(vc);
+        UITableView *tableView = ZLModTableViewForVC(vc);
         BOOL hasTableView = tableView != nil;
-        BOOL tableReady = ZyncTableReady(vc);
-        ZYNC_LOG(@"ensure: primary inject failed (attempts=%lu perVCtries=%ld hasTableView=%d tableReady=%d)",
+        BOOL tableReady = ZLModTableReady(vc);
+        ZLMOD_LOG(@"ensure: primary inject failed (attempts=%lu perVCtries=%ld hasTableView=%d tableReady=%d)",
                  (unsigned long)gInjectAttempts, (long)tries, hasTableView, tableReady);
         // Deterministic fallback: two primary failures in a row with a
         // non-nil tableView show the fallback immediately. tableReady alone
@@ -542,19 +542,19 @@ static void ZyncEnsureRow(id vc) {
         // blocker) — once per-VC retries are exhausted, fall back anyway.
         if ((tries >= 1 && hasTableView) || tries >= 2 || gInjectAttempts >= 10) {
             gFallbackActive = YES;
-            ZYNC_LOG(@"ensure: primary exhausted after %lu attempts (perVCtries=%ld hasTableView=%d tableReady=%d) — fallback row active",
+            ZLMOD_LOG(@"ensure: primary exhausted after %lu attempts (perVCtries=%ld hasTableView=%d tableReady=%d) — fallback row active",
                      (unsigned long)gInjectAttempts, (long)tries, hasTableView, tableReady);
-            ZyncReloadTable(vc);
+            ZLModReloadTable(vc);
         } else {
-            ZyncScheduleRetry(vc);
+            ZLModScheduleRetry(vc);
         }
     }
 }
 
 #pragma mark - Fallback cell
 
-static UITableViewCell *ZyncBuildFallbackCell(UITableView *tv, NSIndexPath *indexPath) {
-    NSString *reuse = @"ZyncCustomizeRow";
+static UITableViewCell *ZLModBuildFallbackCell(UITableView *tv, NSIndexPath *indexPath) {
+    NSString *reuse = @"ZLModCustomizeRow";
     UITableViewCell *cell = [tv dequeueReusableCellWithIdentifier:reuse];
     if (cell) return cell;
 
@@ -572,14 +572,14 @@ static UITableViewCell *ZyncBuildFallbackCell(UITableView *tv, NSIndexPath *inde
         cell.textLabel.font = [UIFont systemFontOfSize:17.0];
         cell.textLabel.textColor = [UIColor labelColor];
     }
-    cell.textLabel.text = @"Zync Customize";
+    cell.textLabel.text = @"ZLMod Customize";
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     return cell;
 }
 
 #pragma mark - Row selection
 
-static BOOL ZyncHandleSelection(id vc, NSIndexPath *indexPath, UITableView *tv) {
+static BOOL ZLModHandleSelection(id vc, NSIndexPath *indexPath, UITableView *tv) {
     if (gOurRow) {
         id tapped = nil;
         if (gSnapshotAligned && indexPath.section < (NSInteger)gSectionSnapshot.count) {
@@ -597,7 +597,7 @@ static BOOL ZyncHandleSelection(id vc, NSIndexPath *indexPath, UITableView *tv) 
             }
         }
         if (tapped == gOurRow) {
-            [ZyncSettingsViewController pushFrom:vc];
+            [ZLModSettingsViewController pushFrom:vc];
             [tv deselectRowAtIndexPath:indexPath animated:YES];
             return YES;
         }
@@ -605,7 +605,7 @@ static BOOL ZyncHandleSelection(id vc, NSIndexPath *indexPath, UITableView *tv) 
     }
 
     if (gFallbackActive && indexPath.section == 0 && indexPath.row == 0) {
-        [ZyncSettingsViewController pushFrom:vc];
+        [ZLModSettingsViewController pushFrom:vc];
         [tv deselectRowAtIndexPath:indexPath animated:YES];
         return YES;
     }
@@ -614,117 +614,105 @@ static BOOL ZyncHandleSelection(id vc, NSIndexPath *indexPath, UITableView *tv) 
 
 #pragma mark - Install
 
-typedef void (*ZyncV0)(id, SEL);
-typedef void (*ZyncV1Bool)(id, SEL, BOOL);
-typedef void (*ZyncV2)(id, SEL, id, id);
-typedef NSInteger (*ZyncQ2)(id, SEL, id, NSInteger);
-typedef id (*ZyncObj2)(id, SEL, id, id);
+typedef void (*ZLModV0)(id, SEL);
+typedef void (*ZLModV1Bool)(id, SEL, BOOL);
+typedef void (*ZLModV2)(id, SEL, id, id);
+typedef NSInteger (*ZLModQ2)(id, SEL, id, NSInteger);
+typedef id (*ZLModObj2)(id, SEL, id, id);
 
-void ZyncSettingsInstall(void) {
+void ZLModSettingsInstall(void) {
     gSettingsClass = NSClassFromString(@"SettingUI40TableViewController");
     BOOL settingsClassFound = gSettingsClass != Nil;
-    ZYNC_LOG(@"settings hub class SettingUI40TableViewController found=%d (%@)",
+    ZLMOD_LOG(@"settings hub class SettingUI40TableViewController found=%d (%@)",
              settingsClassFound, gSettingsClass ? NSStringFromClass(gSettingsClass) : @"<nil>");
     if (!gSettingsClass) {
-        ZYNC_LOG(@"settings hub class not found — settings integration idle");
+        ZLModSetModuleStatus(@"Settings", ZLModModuleStatusNotInstalled,
+                             @"SettingUI40TableViewController not found");
+        ZLMOD_LOG(@"settings hub class not found — settings integration idle");
         return;
     }
 
     SEL viewDidLoadSel = sel_registerName("viewDidLoad");
     IMP viewDidLoadOrig = class_getMethodImplementation(gSettingsClass, viewDidLoadSel);
-    BOOL okViewDidLoad = ZyncReplaceMethod(gSettingsClass, viewDidLoadSel, 0, "v", ^(id self) {
-        ((ZyncV0)viewDidLoadOrig)(self, viewDidLoadSel);
-        dispatch_async(dispatch_get_main_queue(), ^{ ZyncEnsureRow(self); });
+    BOOL okViewDidLoad = ZLModReplaceMethod(gSettingsClass, viewDidLoadSel, 0, "v", ^(id self) {
+        ((ZLModV0)viewDidLoadOrig)(self, viewDidLoadSel);
+        dispatch_async(dispatch_get_main_queue(), ^{ ZLModEnsureRow(self); });
     });
-    ZYNC_LOG(@"settings hook viewDidLoad validated=%d", okViewDidLoad);
+    ZLMOD_LOG(@"settings hook viewDidLoad validated=%d", okViewDidLoad);
 
     SEL willAppearSel = sel_registerName("viewWillAppear:");
     IMP willAppearOrig = class_getMethodImplementation(gSettingsClass, willAppearSel);
-    BOOL okViewWillAppear = ZyncReplaceMethod(gSettingsClass, willAppearSel, 1, "v", ^(id self, BOOL animated) {
-        ((ZyncV1Bool)willAppearOrig)(self, willAppearSel, animated);
-        ZyncEnsureRow(self);
+    BOOL okViewWillAppear = ZLModReplaceMethod(gSettingsClass, willAppearSel, 1, "v", ^(id self, BOOL animated) {
+        ((ZLModV1Bool)willAppearOrig)(self, willAppearSel, animated);
+        ZLModEnsureRow(self);
     });
-    ZYNC_LOG(@"settings hook viewWillAppear: validated=%d", okViewWillAppear);
+    ZLMOD_LOG(@"settings hook viewWillAppear: validated=%d", okViewWillAppear);
 
     SEL didAppearSel = sel_registerName("viewDidAppear:");
     IMP didAppearOrig = class_getMethodImplementation(gSettingsClass, didAppearSel);
-    BOOL okViewDidAppear = ZyncReplaceMethod(gSettingsClass, didAppearSel, 1, "v", ^(id self, BOOL animated) {
-        ((ZyncV1Bool)didAppearOrig)(self, didAppearSel, animated);
-        dispatch_async(dispatch_get_main_queue(), ^{ ZyncEnsureRow(self); });
+    BOOL okViewDidAppear = ZLModReplaceMethod(gSettingsClass, didAppearSel, 1, "v", ^(id self, BOOL animated) {
+        ((ZLModV1Bool)didAppearOrig)(self, didAppearSel, animated);
+        dispatch_async(dispatch_get_main_queue(), ^{ ZLModEnsureRow(self); });
     });
-    ZYNC_LOG(@"settings hook viewDidAppear: validated=%d", okViewDidAppear);
+    ZLMOD_LOG(@"settings hook viewDidAppear: validated=%d", okViewDidAppear);
 
     SEL updateTitleSel = sel_registerName("updateTitleObjects");
     BOOL okUpdateTitle = NO;
-    if (ZyncClassHasInstanceMethod(gSettingsClass, updateTitleSel)) {
+    if (ZLModClassHasInstanceMethod(gSettingsClass, updateTitleSel)) {
         IMP updateTitleOrig = class_getMethodImplementation(gSettingsClass, updateTitleSel);
-        okUpdateTitle = ZyncReplaceMethod(gSettingsClass, updateTitleSel, 0, "v", ^(id self) {
-            ((ZyncV0)updateTitleOrig)(self, updateTitleSel);
-            dispatch_async(dispatch_get_main_queue(), ^{ ZyncEnsureRow(self); });
+        okUpdateTitle = ZLModReplaceMethod(gSettingsClass, updateTitleSel, 0, "v", ^(id self) {
+            ((ZLModV0)updateTitleOrig)(self, updateTitleSel);
+            dispatch_async(dispatch_get_main_queue(), ^{ ZLModEnsureRow(self); });
         });
     }
-    ZYNC_LOG(@"settings hook updateTitleObjects validated=%d", okUpdateTitle);
+    ZLMOD_LOG(@"settings hook updateTitleObjects validated=%d", okUpdateTitle);
 
     SEL didSelectSel = sel_registerName("tableView:didSelectRowAtIndexPath:");
     IMP didSelectOrig = class_getMethodImplementation(gSettingsClass, didSelectSel);
-    BOOL okDidSelect = ZyncReplaceMethod(gSettingsClass, didSelectSel, 2, "v", ^(id self, UITableView *tv, NSIndexPath *indexPath) {
-        if (ZyncHandleSelection(self, indexPath, tv)) return;
+    BOOL okDidSelect = ZLModReplaceMethod(gSettingsClass, didSelectSel, 2, "v", ^(id self, UITableView *tv, NSIndexPath *indexPath) {
+        if (ZLModHandleSelection(self, indexPath, tv)) return;
         NSIndexPath *forward = indexPath;
         if (gFallbackActive && !gOurRow && indexPath.section == 0 && indexPath.row > 0) {
             forward = [NSIndexPath indexPathForRow:indexPath.row - 1 inSection:indexPath.section];
         }
-        ((ZyncV2)didSelectOrig)(self, didSelectSel, tv, forward);
+        ((ZLModV2)didSelectOrig)(self, didSelectSel, tv, forward);
     });
-    ZYNC_LOG(@"settings hook didSelect validated=%d (tableView:didSelectRowAtIndexPath:)", okDidSelect);
+    ZLMOD_LOG(@"settings hook didSelect validated=%d (tableView:didSelectRowAtIndexPath:)", okDidSelect);
 
     SEL rowsSel = sel_registerName("tableView:numberOfRowsInSection:");
     BOOL okNumberOfRows = NO;
-    if (ZyncClassHasInstanceMethod(gSettingsClass, rowsSel)) {
+    if (ZLModClassHasInstanceMethod(gSettingsClass, rowsSel)) {
         IMP rowsOrig = class_getMethodImplementation(gSettingsClass, rowsSel);
-        okNumberOfRows = ZyncReplaceMethod(gSettingsClass, rowsSel, 2, "q", ^NSInteger(id self, UITableView *tv, NSInteger section) {
-            NSInteger rows = ((ZyncQ2)rowsOrig)(self, rowsSel, tv, section);
+        okNumberOfRows = ZLModReplaceMethod(gSettingsClass, rowsSel, 2, "q", ^NSInteger(id self, UITableView *tv, NSInteger section) {
+            NSInteger rows = ((ZLModQ2)rowsOrig)(self, rowsSel, tv, section);
             if (gFallbackActive && !gOurRow && section == 0) rows += 1;
             return rows;
         });
     }
-    ZYNC_LOG(@"settings hook numberOfRows validated=%d (tableView:numberOfRowsInSection:)", okNumberOfRows);
+    ZLMOD_LOG(@"settings hook numberOfRows validated=%d (tableView:numberOfRowsInSection:)", okNumberOfRows);
 
     SEL cellSel = sel_registerName("tableView:cellForRowAtIndexPath:");
     BOOL okCellForRow = NO;
-    if (ZyncClassHasInstanceMethod(gSettingsClass, cellSel)) {
+    if (ZLModClassHasInstanceMethod(gSettingsClass, cellSel)) {
         IMP cellOrig = class_getMethodImplementation(gSettingsClass, cellSel);
-        okCellForRow = ZyncReplaceMethod(gSettingsClass, cellSel, 2, "@", ^id(id self, UITableView *tv, NSIndexPath *indexPath) {
+        okCellForRow = ZLModReplaceMethod(gSettingsClass, cellSel, 2, "@", ^id(id self, UITableView *tv, NSIndexPath *indexPath) {
             if (gFallbackActive && !gOurRow && indexPath.section == 0) {
-                if (indexPath.row == 0) return ZyncBuildFallbackCell(tv, indexPath);
+                if (indexPath.row == 0) return ZLModBuildFallbackCell(tv, indexPath);
                 NSIndexPath *forward = [NSIndexPath indexPathForRow:indexPath.row - 1 inSection:indexPath.section];
-                return ((ZyncObj2)cellOrig)(self, cellSel, tv, forward);
+                return ((ZLModObj2)cellOrig)(self, cellSel, tv, forward);
             }
-            return ((ZyncObj2)cellOrig)(self, cellSel, tv, indexPath);
+            return ((ZLModObj2)cellOrig)(self, cellSel, tv, indexPath);
         });
     }
-    ZYNC_LOG(@"settings hook cellForRow validated=%d (tableView:cellForRowAtIndexPath:)", okCellForRow);
-    ZYNC_LOG(@"settings hooks summary viewDidAppear:=%d viewWillAppear:=%d updateTitleObjects=%d cellForRow=%d numberOfRows=%d didSelect=%d",
+    ZLMOD_LOG(@"settings hook cellForRow validated=%d (tableView:cellForRowAtIndexPath:)", okCellForRow);
+    ZLMOD_LOG(@"settings hooks summary viewDidAppear:=%d viewWillAppear:=%d updateTitleObjects=%d cellForRow=%d numberOfRows=%d didSelect=%d",
              okViewDidAppear, okViewWillAppear, okUpdateTitle, okCellForRow, okNumberOfRows, okDidSelect);
 
     // Late install: Settings may already be on screen before hooks land.
     // Scan the key window once (main queue) so the visible instance still
     // gets an injection attempt — no polling loop.
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindow *window = nil;
-        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if ([scene isKindOfClass:[UIWindowScene class]] &&
-                scene.activationState == UISceneActivationStateForegroundActive) {
-                for (UIWindow *w in ((UIWindowScene *)scene).windows) {
-                    if (w.isKeyWindow) { window = w; break; }
-                }
-            }
-            if (window) break;
-        }
-        if (!window) {
-            for (UIWindow *w in [UIApplication sharedApplication].windows) {
-                if (w.isKeyWindow) { window = w; break; }
-            }
-        }
+        UIWindow *window = ZLModActiveKeyWindow();
         UIViewController *root = window.rootViewController;
         if (!root || window == nil) return;
         NSMutableArray<UIViewController *> *stack = [NSMutableArray arrayWithObject:root];
@@ -740,10 +728,14 @@ void ZyncSettingsInstall(void) {
             }
         }
         if (found) {
-            ZYNC_LOG(@"ensure: late install found visible settings screen — injecting");
-            @try { ZyncEnsureRow(found); } @catch (__unused NSException *e) {}
+            ZLMOD_LOG(@"ensure: late install found visible settings screen — injecting");
+            @try { ZLModEnsureRow(found); } @catch (__unused NSException *e) {}
         }
     });
 
-    ZYNC_LOG(@"settings integration installed");
+    ZLModSetModuleStatus(@"Settings",
+                         okDidSelect ? ZLModModuleStatusHookInstalled : ZLModModuleStatusNotInstalled,
+                         [NSString stringWithFormat:@"didAppear=%d willAppear=%d didSelect=%d",
+                          okViewDidAppear, okViewWillAppear, okDidSelect]);
+    ZLMOD_LOG(@"settings integration installed");
 }

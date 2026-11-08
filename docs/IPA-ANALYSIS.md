@@ -1,4 +1,4 @@
-# Zync — IPA Analysis (Zalo 26.11.01)
+# ZLMod — IPA Analysis (Zalo 26.11.01)
 
 Nguồn: `vn.com.vng.zingalo-26.11.01-eeveedecrypter.ipa` (135,649,595 B, 1,076 entries,
 binary `Payload/Zalo.app/Zalo` 182,755,664 B). Phân tích tĩnh: plistlib,
@@ -33,7 +33,7 @@ llvm-otool/objdump, `strings -a -n 4` (897,614 dòng), parser Mach-O chained-fix
   iCloud `iCloud.vn.com.vng.zingalo`; keychain group `CVB6BX97VM.group.keychain.vn.com.vng.zalo`.
 - **6 App Group**: `group.zcontacts…`, `group.zfriends…`, **`group.zsettings…`**,
   `group.vn.com.vng.zingalo`, `group.zgroups…`, `group.noti…`
-  → `group.zsettings.vn.com.vng.zingalo` là nơi Zync mirror external keys.
+  → `group.zsettings.vn.com.vng.zingalo` là nơi ZLMod mirror external keys.
 - Không có `embedded.mobileprovision` → package cần re-sign để chạy.
 
 ## 4. Settings (xác minh)
@@ -57,7 +57,7 @@ llvm-otool/objdump, `strings -a -n 4` (897,614 dòng), parser Mach-O chained-fix
 - Hỗ trợ: `ZaloTabBarChildDelegate`, `TabbarBadgeView`, `ASZTabbarConfig`,
   `ZATimelineTabBarProcessor`, `ContactSubTabbarView`.
 - Lưu ý: parent UIKit chưa xác minh được từ parse tĩnh (import ordinal decode lỗi);
-  Zync không giả định parent nào.
+  ZLMod không giả định parent nào.
 
 ## 6. Messaging (xác minh — dùng làm hook anchors)
 
@@ -101,7 +101,7 @@ llvm-otool/objdump, `strings -a -n 4` (897,614 dòng), parser Mach-O chained-fix
 
 ## 9. Đối chiếu ZaloXposed → iOS
 
-| ZaloXposed (Android) | iOS verdict | Zync |
+| ZaloXposed (Android) | iOS verdict | ZLMod |
 |---|---|---|
 | SilentTypingHook (MessageRepository) | (b) → chọn selector gửi typing | Hide Typing ✅ |
 | BlockSendSeenHook (SendSeenManager) | (b) → 12 selectors seen/ACK | Seen + Read Receipts ✅ |
@@ -122,5 +122,5 @@ llvm-otool/objdump, `strings -a -n 4` (897,614 dòng), parser Mach-O chained-fix
 unzip -o vn.com.vng.zingalo-26.11.01-eeveedecrypter.ipa -d extracted
 strings -a -n 4 extracted/Payload/Zalo.app/Zalo > zalo.strings
 # class/selector lists: parser Mach-O __objc_classlist / __objc_methname
-ZYNC_IPA_DUMP=. ./Scripts/anchors-verify.sh   # 49 anchors, 0 missing
+ZLMOD_IPA_DUMP=. ./Scripts/anchors-verify.sh   # 49 anchors, 0 missing
 ```

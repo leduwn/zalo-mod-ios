@@ -1,23 +1,41 @@
-# Zync anchor manifest — every host symbol Zync references at runtime.
+# ZLMod anchor manifest — every host symbol ZLMod references at runtime.
 # Format: kind<TAB>anchor
 #   sel = ObjC selector (must exist in __objc_methname)
 #   cls = ObjC class (must exist in __objc_classlist)
-#   key = preference/config key string (must exist in binary strings)
+#   key = preference/config/notification key string (must exist in binary strings)
 #   url = URL fragment (must exist in binary strings)
-# Verify with: ZYNC_IPA_DUMP=<dir> ./Scripts/anchors-verify.sh
+# Verify with: ZLMOD_IPA_DUMP=<dir> ./Scripts/anchors-verify.sh
+sel	sendTypingWithType:toUserId:messageType:isE2eeChat:
 sel	sendStatusTyping:withCommand:withSubCommand:withDestType:withGlobalMessageId:
 sel	sendSeenMessageWithChatEntity:
 sel	sendSeenMessageWithTalkTableItem:
 sel	sendSeenMessages:messageDict:incomingData:
 sel	_sendSeenMessageWithSeenData:messageType:
 sel	sendSeenServer
-sel	sendSeenServerPARQueue
 sel	forceSendSeenServer
 sel	sendSeenLastMessageWithThreadIds:withMessageType:
 sel	sendSeenChatACK:withSubCommandType:
 sel	sendSeenGroupChatACKByData:withSubCommandType:
 sel	sendSeenCurrentUnreadFriendRequest:sourceView:
 sel	sendSeenCurrentUnreadFriendRequest:retryTime:sourceView:
+sel	zaloViewDidAppear:
+sel	zaloViewWillDisappear:
+sel	fillChatBarWithText:
+sel	getActionsWithItem:
+sel	contextMenu:didSelectActionId:forIdentifier:
+sel	setObject:
+sel	setListItem:
+sel	prepareForReuse
+sel	didLoadChats:config:
+sel	updateDBWhenRecalledChats:completion:
+sel	_getRecalledMsgPreviewFromSource:
+sel	sendChat:checkUpload:
+sel	didLogout
+sel	didLogin
+sel	sharedContext
+sel	sharedChatDataManager
+sel	currentUserId
+sel	ownerId
 sel	enableProfileMusic
 sel	enableProfileMusicRBT
 sel	enableShareProfileMusic
@@ -34,10 +52,27 @@ cls	SettingUI40TableViewController
 cls	BasicSettingUI40TableViewController
 cls	AccountSettingUI40ViewController
 cls	ZaloTabBarViewController
+cls	BaseChatTVC
+cls	InboxContextMenuManager
+cls	ContextMenuViewModel
+cls	UXInboxMessageCell
+cls	UXInboxMessageCellItem
+cls	ChatListItemCell
+cls	ConversationModel
+cls	ChatEntity
+cls	ZAChatSendingManager
+cls	ChatDataManager
+cls	ChatSendSeenDataManager
+cls	ChatSocketCmdHelper
+cls	ZAApplicationContext
+cls	FTSDatabaseManager
+cls	AppDelegate
+cls	FriendRequestManager
 cls	ZLExtendedProfileMusic
 cls	ProfileMusicItemModel
 cls	ZInstantFeedAdsView
 cls	LocationOAAdsCell
+key	kNotifyDidLogoutAnimation
 key	kProfileMusicSetting
 key	profile_music
 key	features@profile_music

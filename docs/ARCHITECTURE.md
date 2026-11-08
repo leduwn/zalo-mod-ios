@@ -1,123 +1,90 @@
-# Zync — Kiến trúc
+# ZLMod — Kiến trúc (Build 5)
 
 ## 1. Tổng quan
 
+```text
+┌──────────────────────────────────────────────────────────────────────────┐
+│ ZLModCore (constructor → DidFinishLaunching / late-window fallback)      │
+│   ├─ Session observers: AppDelegate -didLogout/-didLogin,                │
+│   │                     kNotifyDidLogoutAnimation → AccountDidChange     │
+│   ├─ Redacted ring-buffer (200 lines) + rotating ZLMod.log (max 512 KB)  │
+│   └─ Module status registry (HOOK_INSTALLED / NOT_INSTALLED)             │
+│                                                                          │
+│  ZLModCryptoStore ── Keychain AES-256-CBC + HMAC-SHA256 + accountScope   │
+│  ZLModPolicyStore ── ZLModPrivacyContext + ZLModConversationPolicyStore  │
+│  ZLModURIFilter ──── NSURLProtocol (in-process tracking + ads → 204)     │
+│  ZLModPrivacy ────── Mach-O ABI-verified Seen / Typing / Firebase hooks  │
+│  ZLModConversationMenu ─ InboxContextMenuManager + cell blue-dot badge   │
+│  ZLModAntiRecall ─── Encrypted local Ghost Preview (14d TTL, non-DB)     │
+│  ZLModUtilities ──── Private Notes, Quick Replies, Delay Send Undo FSM   │
+│  ZLModTheme ──────── Optional presets + hex tint with baseline restore   │
+│  ZLModAds ────────── Ad view class disarming                             │
+│  ZLModFeatures ───── Profile Music / GDrive bridge / More Tab            │
+│  ZLModSettings ───── Cloned native cell + navigation interception        │
+│  ZLModGlass ──────── Tab bar material overlay (REAL_GLASS / BLUR)        │
+│  ZLModUI ─────────── Grouped settings dashboard + 6 child controllers    │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
-┌────────────────────────────────────────────────────────────────┐
-│ ZyncCore (constructor +0.3s, main queue, mỗi module @try/catch)│
-│                                                                │
-│  ZyncURIFilter ── NSURLProtocol (tracking + ads rules)         │
-│  ZyncPrivacy ──── typing / seen / read-receipt no-op hooks    │
-│  ZyncAds ──────── ad view class disarming                     │
-│  ZyncFeatures ─── Profile Music / GDrive bridge / More Tab     │
-│  ZyncSettings ─── cell-object clone + navigation interception │
-│  ZyncGlass ────── tab bar material overlay                    │
-│                                                                │
-│  ZyncPreferences ─ suite riêng + App Group mirror + restore    │
-│  ZyncHookEngine ── runtime discovery + validated replacement   │
-│  ZyncCompatibility ─ identity/version/anchors                  │
-└────────────────────────────────────────────────────────────────┘
-```
 
-Một dylib duy nhất (`libZync.dylib`), không framework phụ, không Theos,
-không substrate. Link: `UIKit`, `Foundation`, `QuartzCore` — tất cả system.
+Một dylib duy nhất (`libZLMod.dylib`), không framework phụ, không Theos,
+không Substrate/ElleKit. Link duy nhất các system frameworks: `UIKit`,
+`Foundation`, `QuartzCore`, `Security`.
 
-## 2. Triết lý hook
+## 2. Nguyên tắc ABI & Fail-Closed
 
-1. **Không địa chỉ cứng, không selector bịa.** Mọi ký hiệu nằm trong
-   `Scripts/anchors.txt`, đối chiếu với binary bằng `anchors-verify.sh`.
-2. **Discovery runtime, không đoán.** `ZyncEnumerateAppClasses` quét
-   `objc_getClassList` lọc theo bundle `/Zalo.app/`; selector dùng chung
-   (`sendSeenServer`, …) được hook ở mọi class trong app sở hữu nó.
-3. **Validate trước khi thay.** `ZyncReplaceMethod` kiểm tra
-   `method_getNumberOfArguments == declaredArgs + 2` và return encoding hợp lệ
-   (`v` cho void, `Bc` cho BOOL). Sai → bỏ qua, log, không crash.
-4. **Dedupe.** Mỗi cặp (class, selector) chỉ hook một lần.
-5. **Fail-safe.** Thiếu anchor → module im lặng, app chạy như chưa cài.
+1. **Không địa chỉ cứng, không selector đoán mò.** Toàn bộ 84 ký hiệu runtime
+   (`sel`, `cls`, `key`, `url`) nằm trong `Scripts/anchors.txt` và đã được đối
+   chiếu trực tiếp với bảng `__objc_methname`, `__objc_classname`, `__objc_classlist`
+   của binary `Zalo` Mach-O.
+2. **Kiểm chứng chữ ký trước khi hook.** `ZLModReplaceMethod` (instance `-`) và
+   `ZLModReplaceClassMethod` (metaclass `+`) kiểm tra nghiêm ngặt
+   `method_getNumberOfArguments(m) == declaredArgs + 2` và ký tự đầu của
+   `method_getTypeEncoding(m)` thuộc `allowedReturns`.
+3. **Đọc thuộc tính an toàn ABI.** Các hàm `ZLModSafeObjectProperty`,
+   `ZLModSafeStringProperty`, `ZLModSafeBoolProperty`, `ZLModSafeInt64Property`,
+   `ZLModSafeDoubleProperty` kiểm tra selector tồn tại, đúng 0 tham số tường
+   minh (`numberOfArguments == 2`) và giải mã đúng kiểu trả về (`@`, `B`, `c`,
+   `q`, `Q`, `i`, `d`, `f`) trước khi gọi `objc_msgSend`.
+4. **Cách ly đa tài khoản (`accountScope`) & Fail-Closed.**
+   `ZLModCurrentAccountScope()` truy vấn `userId` từ các singleton đã xác minh
+   trong Mach-O (`ZAApplicationContext +sharedContext`,
+   `ChatDataManager +sharedChatDataManager`,
+   `ChatSendSeenDataManager +shared`,
+   `FTSDatabaseManager +sharedInstance`), loại bỏ giá trị rỗng/`"0"`/`null` và
+   băm SHA-256 thành `acc_<16hex>`. Khi chưa xác định được tài khoản, mọi kho
+   dữ liệu nhạy cảm (`ZLModConversationPolicyStore`, `ZLModAntiRecallStore`,
+   `ZLModPrivateNotesStore`, `ZLModConversationMenu`) tự động từ chối ghi/đọc
+   (fail-closed), không bao giờ dùng chung bucket toàn cục.
+5. **Mã hóa cục bộ Encrypt-then-MAC (`ZLModCryptoBox`).**
+   Khóa chính 256-bit được sinh bằng `CCRandomGenerateBytes` và lưu trong iOS
+   Keychain (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`). Hai khóa con
+   độc lập (`ENC` và `MAC`) được dẫn xuất qua SHA-256 để mã hóa `AES-256-CBC` +
+   xác thực `HMAC-SHA256` (so sánh hằng thời gian) gắn chặt với metadata ngữ cảnh.
 
-## 3. Privacy — cơ chế
+## 3. Các điểm sửa ABI quan trọng so với bản mẫu nghiên cứu
 
-| Feature | Hook | Ghi chú |
+| Hạng mục | Thực tế trong Mach-O Zalo `26.10.02` / `26.11.01` | Cách xử lý trong ZLMod |
 |---|---|---|
-| Hide typing | `sendStatusTyping:withCommand:withSubCommand:withDestType:withGlobalMessageId:` | chỉ chiều gửi |
-| Control seen | `sendSeenMessageWithChatEntity:`, `…TalkTableItem:`, `sendSeenMessages:messageDict:incomingData:`, `_sendSeenMessageWithSeenData:messageType:` | trạng thái local không đổi |
-| Control read receipts | `sendSeenServer`, `sendSeenServerPARQueue`, `forceSendSeenServer`, `sendSeenLastMessageWithThreadIds:withMessageType:`, `sendSeenChatACK:withSubCommandType:`, `sendSeenGroupChatACKByData:withSubCommandType:`, `sendSeenCurrentUnreadFriendRequest:(retryTime:)sourceView:` | ACK + server flush |
-| Tracking | NSURLProtocol: host `log.api.zaloapp.com`, path `/tracking*` (gồm `/tracking-v3`, `/tracking-rt`) | trả 204 rỗng |
-| Firebase | `FIRAnalytics.setAnalyticsCollectionEnabled:NO`, `FIRPerformance.setDataCollectionEnabled:NO`, `FIRCrashlytics` collection off | API chính thức, respond-guarded |
+| `ChatSendSeenDataManager -sendSeenServerPARQueue` | Encoding `[@16@0:8]` — là getter trả về đối tượng queue, **không phải** hàm void gửi seen | Không bao giờ hook selector này; đã loại bỏ khỏi `Scripts/anchors.txt` |
+| `ChatSocketCmdHelper` seen & typing | `+sendSeenChatACK:withSubCommandType:`, `+sendSeenGroupChatACKByData:withSubCommandType:`, `+sendStatusTyping:...` là **class methods (`+`)**; `+sendStatusTyping:...` trả về `Q` (`unsigned long long`) | Hook trên metaclass bằng `ZLModReplaceClassMethod` với đúng kiểu trả về |
+| `ChatDataManager -sendTypingWithType:toUserId:messageType:isE2eeChat:` | Encoding `[B44@0:8Q16@24Q32B40]` — trả về `BOOL` (`B`), nhận 4 tham số | Hook với `declaredArgs=4`, `allowedReturns="Bc"`, trả về `NO` khi chặn |
+| `FriendRequestManager` unread receipts | Tham số `sourceView` có kiểu `i` (`int` 32-bit) | Khai báo block nhận `int sourceView` khớp ABI |
+| `InboxContextMenuManager -contextMenu:didSelectActionId:forIdentifier:` | Encoding `[v40@0:8@16q24@32]` — 3 tham số `(id, NSInteger, id)` | Hook đúng `declaredArgs=3`, kiểm tra `ZLModMenuSession` (TTL 120s, dùng 1 lần) |
+| `ContextMenuViewModel` | `textColor` / `iconColor` nhận kiểu `ZDSColor *`, không phải `UIColor *` | Chỉ gán `text`, `iconImage`, `menuType`, `accessibilityIdentifier` |
+| Cell danh sách hội thoại | Zalo sử dụng cả `UXInboxMessageCell` (`-setObject:`) và `ChatListItemCell` (`-setListItem:`) của `ZADesignSystem` | Hook cả hai lớp cell và theo dõi qua `NSHashTable` yếu để cập nhật chấm xanh tức thì |
+| `ChatEntity` target ID | Có `tuid` và `threadId`, **không có** `toUid` | Đọc `tuid` / `threadId` qua `ZLModSafeStringProperty` |
+| `ChatEntity -_getRecalledMsgPreviewFromSource:` | Encoding `[@24@0:8q16]` — 1 tham số `NSInteger source` (`q`) | Hook đúng `declaredArgs=1`, trả về chuỗi có tiền tố `ZLModAntiRecallNoticePrefix` |
 
-Toggle đọc **mỗi lần gọi** (không cache cứng trong block) → bật/tắt có hiệu lực ngay.
+## 4. Build & Kiểm chứng
 
-## 4. Ads — hai tầng
+```text
+Portable (mọi OS có Python 3):
+  python -m unittest discover -s Tests -p "test_*.py" -v
+  python Scripts/project_gate.py .
 
-- **Tầng request**: endpoint xác minh từ binary — `%@/zpads/inboxnative/getads`,
-  `/v1/user/core/get/ads`, `adsv2`, `ads_out_stream`, `ads_boost`,
-  `/v1/ads/impression`, host `ads.platform.zalo.me`. Chặn ở NSURLProtocol, trả 204.
-- **Tầng view**: class `UIView`-descendant trong Zalo.app có tên chứa
-  `AdsView`/`AdsCell`/`AdsBanner`/`advert`/`promoted` (ví dụ thật:
-  `ZInstantFeedAdsView`, `LocationOAAdsCell`) bị ghim `hidden` trong
-  `didMoveToSuperview` và ép `YES` trong `setHidden:` khi toggle bật.
-
-## 5. Settings — clone cell gốc
-
+macOS CI (macos-26 + Xcode iphoneos SDK):
+  make          → build/libZLMod.dylib
+  make gates    → Scripts/gates.sh (arm64, deps, install_name, minos 15.1,
+                  UIGlassEffect runtime guard, codesign, size)
+  Scripts/report.sh → SHA-256, nm, otool, IMPLEMENTATION-REPORT.md, COMPATIBILITY-REPORT.md
 ```
-SettingUI40TableViewController   ← settings hub (owns accountAndSecurityObject)
-viewDidLoad / viewWillAppear / updateTitleObjects  → ZyncEnsureRow
-  1. accountObject = [vc valueForKey:@"accountAndSecurityObject"]
-  2. container = BFS tìm NSMutableArray chứa accountObject (identity)
-  3. clone = [accountObject copy] (fallback: alloc + ivar copy, retain đúng luật ARC)
-  4. retitle: quét ivar NSString khớp {"Tài khoản và bảo mật", "00Zh8W",
-     "tabme.section_items.account_security.title", …} → "Zync Customize"
-  5. insert ngay trên account row, reload
-tableView:didSelectRowAtIndexPath: → identity == gOurRow → push dashboard
-```
-
-Hệ quả: hàng Zync thừa hưởng **nguyên bản** chiều cao, padding, font, màu,
-separator, disclosure, animation — vì nó là cùng một class cell object của Zalo,
-chỉ khác title. Fallback (chỉ khi model không chạm được): chèn 1 row qua
-`numberOfRows`/`cellForRow` với cell class `BasicSettingCell(V2)` nếu
-instantiate được.
-
-## 6. Liquid Glass — sự thật kỹ thuật
-
-- API công khai cho glass là `UIGlassEffect` (iOS 26.0+) gắn vào `UIVisualEffectView`.
-  `UITabBarController` **không có** setter glass công khai — system tab bar tự
-  adopt khi process ở new-design mode.
-- Zalo 26.11.01 build bằng SDK 26.2 nhưng đặt `UIDesignRequiresCompatibility=YES`
-  → process chạy legacy UI → system tab bar không thành glass. Key đọc từ main
-  bundle lúc launch và nằm trong code signature — **dylib không sửa được**.
-- Zync vì vậy phủ overlay material trong bounds tab bar:
-  - `REAL_GLASS`: `UIGlassEffect` nếu runtime có (iOS 26+), style `.regular`, tint nhẹ;
-  - `BLUR`: `UIBlurEffect systemUltraThinMaterial` cho iOS cũ hơn.
-- Overlay `userInteractionEnabled = NO`; hairline separator trên đỉnh; không đụng
-  safe area, không đổi layout, không chặn điều hướng.
-- Muốn *system* glass thật: xóa `UIDesignRequiresCompatibility` khỏi Info.plist
-  + re-sign bundle (ngoài phạm vi dylib; pipeline inject/re-sign do người dùng).
-
-## 7. Preferences
-
-- Suite chính: `vn.com.vng.zingalo.zync`.
-- Mirror: standard defaults + `group.zsettings.vn.com.vng.zingalo`
-  (6 App Group của Zalo đã xác minh; `zsettings` là nhóm settings).
-- `writeExternalValue:forKey:` lưu giá trị cũ (archive) trước khi ghi; tắt
-  feature → `restoreExternalValueForKey:` trả lại đúng trạng thái người dùng.
-
-## 8. Build & CI
-
-```
-macos-26 runner
-  make → xcrun clang -dynamiclib -arch arm64 -miphoneos-version-min=15.1
-  gates.sh: file / otool -L (không substrate) / install_name / LC_BUILD_VERSION
-            minos 15.1 / nm chặn strong-undef _OBJC_CLASS_$_UIGlassEffect / codesign
-  report.sh: SHA-256, nm, otool, IMPLEMENTATION-REPORT.md, COMPATIBILITY-REPORT.md
-  tag v* → Pre-release (zip + dylib + sha + reports)
-```
-
-## 9. Rủi ro đã biết
-
-| Rủi ro | Giảm thiểu |
-|---|---|
-| Selector đổi ở bản Zalo sau | anchors-verify + validate runtime; sai → no-op |
-| Model settings đổi cấu trúc | clone thất bại → fallback row; vẫn chèn được |
-| `UIGlassEffect` không render trong compat-mode process | overlay vẫn là blur hợp lệ; ghi rõ tier, không mạo nhận |
-| `didMoveToSuperview` bị ad class ghi đè | setHidden: ghim song song, toggle off phục hồi ngay |
-| Zalo jailbreak-detection (strings Cydia/Substrate có trong binary) | Zync không copy check nào; môi trường inject/re-sign do người dùng quyết định |

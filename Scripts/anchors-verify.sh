@@ -1,12 +1,12 @@
 #!/bin/bash
-# Zync — verify every anchor in Scripts/anchors.txt against IPA analysis dumps.
-# Required dump files in $ZYNC_IPA_DUMP:
+# ZLMod — verify every anchor in Scripts/anchors.txt against IPA analysis dumps.
+# Required dump files in $ZLMOD_IPA_DUMP:
 #   objc_methname.txt  (selectors, one per line)
 #   objc_classname.txt (classes, one per line)
 #   zalo.strings       (strings -a -n 4 output of the host binary)
 set -euo pipefail
 
-DIR="${ZYNC_IPA_DUMP:?set ZYNC_IPA_DUMP to the dump directory}"
+DIR="${ZLMOD_IPA_DUMP:?set ZLMOD_IPA_DUMP to the dump directory}"
 ANCHORS="$(dirname "$0")/anchors.txt"
 
 PASS=0; FAIL=0

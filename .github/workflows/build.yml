@@ -1,4 +1,4 @@
-name: Zync CI
+name: ZLMod CI
 
 on:
   push:
@@ -13,7 +13,7 @@ jobs:
   build:
     runs-on: macos-26
     env:
-      ZYNC_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+      ZLMOD_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -26,54 +26,62 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-path
 
-      - name: Build libZync.dylib
+      - name: Portable contract & identity tests
+        run: |
+          python3 -m unittest discover -s Tests -p "test_*.py" -v
+          python3 Scripts/project_gate.py .
+
+      - name: Build libZLMod.dylib
         run: make
 
       - name: Verification gates
-        run: ./Scripts/gates.sh build/libZync.dylib
+        run: ./Scripts/gates.sh build/libZLMod.dylib
 
       - name: Metadata + reports
-        run: ./Scripts/report.sh build/libZync.dylib build
+        run: ./Scripts/report.sh build/libZLMod.dylib build
 
       - name: Package artifacts
         run: |
           cd build
           cp ../README.md README.md 2>/dev/null || true
-          zip -9 "Zync-${ZYNC_VERSION}.zip" \
-            libZync.dylib libZync.dylib.sha256 libZync.nm.txt libZync.otool-L.txt \
-            libZync.file.txt IMPLEMENTATION-REPORT.md COMPATIBILITY-REPORT.md README.md
+          zip -9 "ZLMod-${ZLMOD_VERSION}.zip" \
+            libZLMod.dylib libZLMod.dylib.sha256 libZLMod.nm.txt libZLMod.otool-L.txt \
+            libZLMod.file.txt IMPLEMENTATION-REPORT.md COMPATIBILITY-REPORT.md README.md
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Zync-${{ env.ZYNC_VERSION }}
+          name: ZLMod-${{ env.ZLMOD_VERSION }}
           path: |
-            build/libZync.dylib
+            build/libZLMod.dylib
             build/*.sha256
             build/*-REPORT.md
-            build/Zync-*.zip
+            build/ZLMod-*.zip
 
       - name: Publish pre-release
         if: startsWith(github.ref, 'refs/tags/build-')
         uses: softprops/action-gh-release@v2
         with:
           prerelease: true
-          name: Zync ${{ github.ref_name }}
+          name: ZLMod ${{ github.ref_name }}
           body: |
-            Zync ${{ github.ref_name }} — Zalo native customization dylib.
+            ZLMod ${{ github.ref_name }} — Zalo native customization dylib.
 
-            - Target: Zalo 26.11.01 (vn.com.vng.zingalo), arm64, iOS 15.1+
-            - Modules: ZyncCore, ZyncUI, ZyncSettings, ZyncGlass, ZyncPrivacy,
-              ZyncAds, ZyncFeatures, ZyncPreferences, ZyncCompatibility
+            - Targets: Zalo 26.10.02 (261002802) & 26.11.01 (261101802), vn.com.vng.zingalo / vn.com.vng.zingalo2, arm64, iOS 15.1+
+            - Modules: ZLModCore, ZLModCompatibility, ZLModPreferences, ZLModHookEngine,
+              ZLModCryptoStore, ZLModPolicyStore, ZLModURIFilter, ZLModPrivacy,
+              ZLModConversationMenu, ZLModAntiRecall, ZLModUtilities, ZLModTheme,
+              ZLModAds, ZLModFeatures, ZLModSettings, ZLModUI, ZLModGlass
             - Verification gates passed: arm64, deps clean (no substrate),
               install_name, minos 15.1, UIGlassEffect runtime-guarded, codesigned
             - See IMPLEMENTATION-REPORT.md and COMPATIBILITY-REPORT.md
 
-            Not ported by design (no usable iOS mechanism / server-authoritative):
-            ZCloud premium unlock, group admin/owner spoofing, chat-head overlay.
+            Not ported by design (no usable iOS mechanism / server-authoritative / unsafe):
+            Original Photo Default, ZCloud premium unlock, video transcode bypass,
+            server TTL/upload limit override, group admin/owner spoofing, chat-head overlay.
           files: |
-            build/Zync-*.zip
-            build/libZync.dylib
-            build/libZync.dylib.sha256
+            build/ZLMod-*.zip
+            build/libZLMod.dylib
+            build/libZLMod.dylib.sha256
             build/IMPLEMENTATION-REPORT.md
             build/COMPATIBILITY-REPORT.md

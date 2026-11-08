@@ -1,8 +1,8 @@
 #!/bin/bash
-# Zync — artifact verification gates. Fails the build on any violation.
+# ZLMod — artifact verification gates. Fails the build on any violation.
 set -euo pipefail
 
-DYLIB="${1:-build/libZync.dylib}"
+DYLIB="${1:-build/libZLMod.dylib}"
 FAIL=0
 
 fail() { echo "GATE FAIL: $1"; FAIL=1; }
@@ -22,8 +22,8 @@ echo "$DEPS" | grep -Ev '^(/System/Library/|/usr/lib/|@executable_path/|@rpath/|
 echo "$DEPS" | grep -qiE 'substrate|ellekit|cydia' && fail "hook-injection library linked" || pass "no substrate/ellekit"
 
 # 3. Install name.
-otool -D "$DYLIB" 2>/dev/null | tail -n +2 | grep -q "@executable_path/Frameworks/libZync.dylib" \
-  && pass "install_name @executable_path/Frameworks/libZync.dylib" \
+otool -D "$DYLIB" 2>/dev/null | tail -n +2 | grep -q "@rpath/libZLMod.dylib" \
+  && pass "install_name @rpath/libZLMod.dylib" \
   || fail "install_name missing or wrong"
 
 # 4. Platform + deployment target.

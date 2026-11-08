@@ -1,24 +1,24 @@
-// language: Objective-C, file: ZyncGlass.m, target: iOS 15.1+ (Zalo 26.11.01, arm64)
+// language: Objective-C, file: ZLModGlass.m, target: iOS 15.1+ (Zalo 26.11.01, arm64)
 // Liquid Glass tab bar material.
 //
 // Zalo 26.11.01 opts out of the iOS 26 redesign (UIDesignRequiresCompatibility=YES),
 // so the *system* tab bar cannot adopt Liquid Glass while that key is present.
-// Zync therefore applies the two available honest tiers at runtime:
+// ZLMod therefore applies the two available honest tiers at runtime:
 //   Tier REAL_GLASS — UIVisualEffectView backed by UIGlassEffect (iOS 26+ runtime);
 //   Tier BLUR       — UIVisualEffectView backed by systemUltraThinMaterial.
 // The overlay sits inside the tab bar bounds, ignores touches, and never alters
 // navigation, safe areas or layout.
 
-#import "Zync.h"
+#import "ZLMod.h"
 
-typedef void (*ZyncV0)(id, SEL);
-typedef void (*ZyncV1Bool)(id, SEL, BOOL);
+typedef void (*ZLModV0)(id, SEL);
+typedef void (*ZLModV1Bool)(id, SEL, BOOL);
 
-static const NSInteger kZyncGlassOverlayTag = 0x5A7C;
+static const NSInteger kZLModGlassOverlayTag = 0x5A7C;
 static __weak id gTabBarController = nil;
 static NSString *gMaterialDescription = nil;
 
-NSString *ZyncGlassMaterialDescription(void) {
+NSString *ZLModGlassMaterialDescription(void) {
     if (gMaterialDescription) return gMaterialDescription;
     Class glass = NSClassFromString(@"UIGlassEffect");
     gMaterialDescription = (glass && [glass respondsToSelector:NSSelectorFromString(@"effectWithStyle:")])
@@ -27,7 +27,7 @@ NSString *ZyncGlassMaterialDescription(void) {
     return gMaterialDescription;
 }
 
-static UIVisualEffect *ZyncMakeEffect(void) {
+static UIVisualEffect *ZLModMakeEffect(void) {
     Class glass = NSClassFromString(@"UIGlassEffect");
     SEL styleSel = NSSelectorFromString(@"effectWithStyle:");
     if (glass && [glass respondsToSelector:styleSel]) {
@@ -44,14 +44,14 @@ static UIVisualEffect *ZyncMakeEffect(void) {
     return [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial];
 }
 
-static UIView *ZyncFindTabBarView(UIView *root) {
+static UIView *ZLModFindTabBarView(UIView *root) {
     NSString *rootName = NSStringFromClass(object_getClass(root)).lowercaseString;
     if ([rootName containsString:@"tabbar"] && root.bounds.size.height >= 30.0 &&
         root.bounds.size.width >= 200.0 && root.hidden == NO) {
         return root;
     }
     for (UIView *sub in root.subviews) {
-        UIView *found = ZyncFindTabBarView(sub);
+        UIView *found = ZLModFindTabBarView(sub);
         if (found) return found;
     }
     // Heuristic fallback: bottom-docked bar-shaped subview.
@@ -66,32 +66,32 @@ static UIView *ZyncFindTabBarView(UIView *root) {
     return nil;
 }
 
-static UIView *ZyncFindOverlay(UIView *root) {
-    if (root.tag == kZyncGlassOverlayTag) return root;
+static UIView *ZLModFindOverlay(UIView *root) {
+    if (root.tag == kZLModGlassOverlayTag) return root;
     for (UIView *sub in root.subviews) {
-        UIView *found = ZyncFindOverlay(sub);
+        UIView *found = ZLModFindOverlay(sub);
         if (found) return found;
     }
     return nil;
 }
 
-static void ZyncGlassRemove(void) {
+static void ZLModGlassRemove(void) {
     id vc = gTabBarController;
     if (!vc) return;
     UIView *root = [vc isKindOfClass:[UIViewController class]] ? [vc view] : nil;
     if (!root) return;
-    UIView *overlay = ZyncFindOverlay(root);
+    UIView *overlay = ZLModFindOverlay(root);
     if (overlay) {
         [overlay removeFromSuperview];
-        ZYNC_LOG(@"glass overlay removed");
+        ZLMOD_LOG(@"glass overlay removed");
     }
 }
 
 static BOOL gApplying = NO;
 
-static void ZyncGlassApply(void) {
+static void ZLModGlassApply(void) {
     if (gApplying) return;
-    if (![[ZyncPreferences shared] boolForKey:kZyncGlassTabBar]) return;
+    if (![[ZLModPreferences shared] boolForKey:kZLModGlassTabBar]) return;
     gApplying = YES;
     @try {
         id vc = gTabBarController;
@@ -100,17 +100,17 @@ static void ZyncGlassApply(void) {
         UIView *root = controller.view;
         if (!root) return;
 
-        UIView *bar = ZyncFindTabBarView(root);
+        UIView *bar = ZLModFindTabBarView(root);
         if (!bar) return;
 
-        UIView *overlay = ZyncFindOverlay(root);
+        UIView *overlay = ZLModFindOverlay(root);
         if (overlay && overlay.superview == bar) {
             overlay.frame = bar.bounds;
             return;
         }
 
-        UIVisualEffectView *glass = [[UIVisualEffectView alloc] initWithEffect:ZyncMakeEffect()];
-        glass.tag = kZyncGlassOverlayTag;
+        UIVisualEffectView *glass = [[UIVisualEffectView alloc] initWithEffect:ZLModMakeEffect()];
+        glass.tag = kZLModGlassOverlayTag;
         glass.frame = bar.bounds;
         glass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         glass.userInteractionEnabled = NO; // never intercepts navigation touches
@@ -124,13 +124,13 @@ static void ZyncGlassApply(void) {
         [glass.contentView addSubview:hairline];
 
         [bar insertSubview:glass atIndex:0];
-        ZYNC_LOG(@"glass overlay applied — %@", ZyncGlassMaterialDescription());
+        ZLMOD_LOG(@"glass overlay applied — %@", ZLModGlassMaterialDescription());
     } @finally {
         gApplying = NO;
     }
 }
 
-static void ZyncGlassRefreshForCurrentUI(void) {
+static void ZLModGlassRefreshForCurrentUI(void) {
     if (!gTabBarController) {
         UIWindow *window = nil;
         for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
@@ -157,30 +157,39 @@ static void ZyncGlassRefreshForCurrentUI(void) {
             if (cursor.presentedViewController) [stack addObject:cursor.presentedViewController];
         }
     }
-    ZyncGlassApply();
+    if (![[ZLModPreferences shared] boolForKey:kZLModGlassTabBar]) { ZLModGlassRemove(); return; }
+    ZLModGlassApply();
 }
 
-void ZyncGlassInstall(void) {
+void ZLModGlassInstall(void) {
     Class tabCls = NSClassFromString(@"ZaloTabBarViewController");
     if (!tabCls) {
-        ZYNC_LOG(@"tab bar class not found — glass module idle");
+        ZLModSetModuleStatus(@"Glass", ZLModModuleStatusNotInstalled,
+                             @"ZaloTabBarViewController not found");
+        ZLMOD_LOG(@"tab bar class not found — glass module idle");
         return;
     }
 
     SEL appearSel = sel_registerName("viewDidAppear:");
     IMP appearOrig = class_getMethodImplementation(tabCls, appearSel);
-    ZyncReplaceMethod(tabCls, appearSel, 1, "v", ^(id self, BOOL animated) {
-        ((ZyncV1Bool)appearOrig)(self, appearSel, animated);
+    BOOL hooked = ZLModReplaceMethod(tabCls, appearSel, 1, "v", ^(id self, BOOL animated) {
+        ((ZLModV1Bool)appearOrig)(self, appearSel, animated);
         gTabBarController = self;
-        ZyncGlassApply();
+        ZLModGlassApply();
     });
 
-    [[NSNotificationCenter defaultCenter] addObserverForName:ZyncPrefsDidChangeNotification
+    [[NSNotificationCenter defaultCenter] addObserverForName:ZLModPrefsDidChangeNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(NSNotification *note) {
-        if ([note.object isEqualToString:kZyncGlassTabBar]) ZyncGlassRefreshForCurrentUI();
+        if ([note.object isEqualToString:kZLModGlassTabBar] ||
+            [note.object isEqualToString:@"*"]) {
+            ZLModGlassRefreshForCurrentUI();
+        }
     }];
 
-    ZYNC_LOG(@"glass installed — %@", ZyncGlassMaterialDescription());
+    ZLModSetModuleStatus(@"Glass",
+                         hooked ? ZLModModuleStatusHookInstalled : ZLModModuleStatusNotInstalled,
+                         ZLModGlassMaterialDescription());
+    ZLMOD_LOG(@"glass installed — %@", ZLModGlassMaterialDescription());
 }
