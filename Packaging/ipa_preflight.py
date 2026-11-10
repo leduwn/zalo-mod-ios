@@ -48,6 +48,58 @@ def evaluate_compatibility(
     return False, f"unsupported version/build {version}/{build}"
 
 
+def parse_code_signature_blob(stream, dataoff: int, datasize: int) -> dict[str, object]:
+    """Parse Mach-O embedded code signature SuperBlob (slots 0=CodeDirectory, 5=Entitlements)."""
+    if datasize < 12:
+        return {"has_code_signature": True, "valid_superblob": False, "ident": None, "app_id": None, "team_id": None}
+    current_pos = stream.tell()
+    try:
+        stream.seek(dataoff)
+        cs_data = stream.read(min(datasize, 8 * 1024 * 1024))
+    except Exception:
+        return {"has_code_signature": True, "valid_superblob": False, "ident": None, "app_id": None, "team_id": None}
+    finally:
+        stream.seek(current_pos)
+
+    if len(cs_data) < 12:
+        return {"has_code_signature": True, "valid_superblob": False, "ident": None, "app_id": None, "team_id": None}
+
+    smagic, slen, count = struct.unpack(">III", cs_data[:12])
+    if smagic != 0xFADE0CC0:
+        return {"has_code_signature": True, "valid_superblob": False, "ident": None, "app_id": None, "team_id": None}
+
+    res: dict[str, object] = {
+        "has_code_signature": True,
+        "valid_superblob": True,
+        "slots_count": count,
+        "ident": None,
+        "app_id": None,
+        "team_id": None,
+    }
+    for i in range(count):
+        if 12 + (i + 1) * 8 > len(cs_data):
+            break
+        stype, soff = struct.unpack_from(">II", cs_data, 12 + i * 8)
+        if soff + 8 > len(cs_data):
+            continue
+        bmagic, blen = struct.unpack_from(">II", cs_data, soff)
+        if stype == 0 and bmagic == 0xFADE0C02:  # CSSLOT_CODEDIRECTORY
+            if blen >= 24 and soff + 24 <= len(cs_data):
+                ident_off = struct.unpack_from(">I", cs_data, soff + 20)[0]
+                if soff + ident_off < len(cs_data):
+                    ident = cs_data[soff + ident_off :].split(b"\0", 1)[0].decode("utf-8", errors="replace")
+                    res["ident"] = ident
+        elif stype == 5 and bmagic == 0xFADE7171:  # CSSLOT_ENTITLEMENTS
+            ent_xml = cs_data[soff + 8 : soff + blen]
+            try:
+                pl = plistlib.loads(ent_xml)
+                res["app_id"] = pl.get("application-identifier")
+                res["team_id"] = pl.get("com.apple.developer.team-identifier")
+            except Exception:
+                pass
+    return res
+
+
 def macho_info(stream) -> dict[str, object] | None:
     header = stream.read(32)
     if len(header) < 4:
@@ -110,6 +162,10 @@ def macho_info(stream) -> dict[str, object] | None:
             offset = struct.unpack_from(endian + "I", block, 8)[0]
             if 0 <= offset < size:
                 info["rpaths"].append(block[offset:].split(b"\0", 1)[0].decode("utf-8", errors="replace"))
+        elif base_cmd == 0x1D and size >= 16:
+            cs_off, cs_sz = struct.unpack_from(endian + "II", block, 8)
+            info["code_signature_cmd"] = {"dataoff": cs_off, "datasize": cs_sz}
+            info["code_signature"] = parse_code_signature_blob(stream, cs_off, cs_sz)
         cursor += size
     return info
 
@@ -164,7 +220,7 @@ def inspect(path: Path, manifest_path: Path = COMPATIBILITY_MANIFEST) -> dict[st
         version = info.get("CFBundleShortVersionString")
         build = info.get("CFBundleVersion")
         supported, support_reason = evaluate_compatibility(bundle_id, version, build, manifest_path)
-        return {
+        ret = {
             "file": str(path),
             "size_bytes": path.stat().st_size,
             "sha256": sha256_file(path),
@@ -187,6 +243,69 @@ def inspect(path: Path, manifest_path: Path = COMPATIBILITY_MANIFEST) -> dict[st
             "has_codesign_resources": f"{app_root}/_CodeSignature/CodeResources" in files,
             "has_mobileprovision": f"{app_root}/embedded.mobileprovision" in files,
         }
+        ret["installability"] = evaluate_installability(ret)
+        return ret
+
+
+def evaluate_installability(result: dict[str, object]) -> dict[str, object]:
+    """Audit signing state and detect stale signatures/entitlements."""
+    has_provision = bool(result.get("has_mobileprovision"))
+    has_codesign = bool(result.get("has_codesign_resources"))
+    main_bin = result.get("main_executable", {})
+    cs = main_bin.get("code_signature", {}) if isinstance(main_bin, dict) else {}
+    bundle_id = result.get("bundle_id")
+
+    warnings = []
+    stale_detected = False
+
+    cs_ident = cs.get("ident") if isinstance(cs, dict) else None
+    cs_app_id = cs.get("app_id") if isinstance(cs, dict) else None
+
+    if cs_ident and bundle_id and cs_ident != bundle_id:
+        warnings.append(
+            f"Stale CodeDirectory identifier mismatch: binary has '{cs_ident}', Info.plist has '{bundle_id}'"
+        )
+        stale_detected = True
+
+    if cs_app_id and bundle_id:
+        expected_suffix = "." + bundle_id
+        if not cs_app_id.endswith(expected_suffix) and cs_app_id != bundle_id:
+            warnings.append(
+                f"Stale Entitlements application-identifier mismatch: binary has '{cs_app_id}', expected suffix '{bundle_id}'"
+            )
+            stale_detected = True
+
+    is_signed = has_provision and has_codesign and not stale_detected
+    directly_installable = is_signed
+
+    if not has_provision and not has_codesign:
+        state = "UNSIGNED_ARCHIVE"
+        summary = (
+            "IPA is an unsigned package (no mobileprovision, no CodeResources). "
+            "It CANNOT be installed directly on an iOS device in its current state. "
+            "It MUST be re-signed via Sideloadly, xtool, AltStore, or TrollStore (with ldid)."
+        )
+    elif stale_detected:
+        state = "STALE_SIGNATURE_MISMATCH"
+        summary = (
+            "IPA contains mismatched or stale code signatures/entitlements from original app. "
+            "Direct installation will fail with 'Không thể cài đặt'. Re-signing tool must overwrite main binary signature."
+        )
+    else:
+        state = "PROVISIONED_AND_SIGNED"
+        summary = "IPA contains matching provisioning profile and code resources."
+
+    return {
+        "state": state,
+        "directly_installable": directly_installable,
+        "is_signed": is_signed,
+        "stale_signature_detected": stale_detected,
+        "warnings": warnings,
+        "summary": summary,
+        "main_codedirectory_ident": cs_ident,
+        "main_entitlements_app_id": cs_app_id,
+        "main_team_id": cs.get("team_id") if isinstance(cs, dict) else None,
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -195,6 +314,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--expect-bundle", help="Expected CFBundleIdentifier")
     ap.add_argument("--require-unencrypted-main", action="store_true")
     ap.add_argument("--require-compatible", action="store_true")
+    ap.add_argument("--require-installable", action="store_true", help="Fail if IPA is not fully signed and directly installable")
     ap.add_argument("--json-output", type=Path, help="Write JSON report to this file")
     return ap
 
@@ -229,6 +349,24 @@ def main(argv=None) -> int:
         result["has_mobileprovision"],
         result["has_codesign_resources"],
     )
+
+    installability = result.get("installability", {})
+    print("\n================================================================================")
+    print("[*] Installability Gate Audit:")
+    print(f"    Signing State:        {installability.get('state')}")
+    print(f"    Directly Installable: {installability.get('directly_installable')}")
+    print(f"    CodeResources:        {result['has_codesign_resources']}")
+    print(f"    MobileProvision:      {result['has_mobileprovision']}")
+    if installability.get("main_codedirectory_ident"):
+        print(f"    Main CodeDir Ident:   {installability.get('main_codedirectory_ident')}")
+    if installability.get("main_entitlements_app_id"):
+        print(f"    Main Entitlements ID: {installability.get('main_entitlements_app_id')}")
+    if installability.get("warnings"):
+        for w in installability["warnings"]:
+            print(f"    [!] Warning: {w}")
+    print(f"    Guidance:             {installability.get('summary')}")
+    print("================================================================================")
+
     if args.json_output:
         args.json_output.parent.mkdir(parents=True, exist_ok=True)
         args.json_output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -241,6 +379,8 @@ def main(argv=None) -> int:
         fails.append("Main binary still encrypted or unrecognized")
     if args.require_compatible and not result["zlmod_supported"]:
         fails.append(f"Unsupported host target: {result['zlmod_support_reason']}")
+    if args.require_installable and not installability.get("directly_installable"):
+        fails.append(f"IPA is not directly installable on device: {installability.get('summary')}")
     for msg in fails:
         print("FAIL:", msg, file=sys.stderr)
     return 1 if fails else 0

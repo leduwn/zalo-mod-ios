@@ -27,6 +27,8 @@ static const NSUInteger kZLModMaxLiveSnapshots = 400;
 @implementation ZLModLiveMessageSnapshot
 @end
 
+static void ZLModClearUnhiddenMessages(void);
+
 @interface ZLModAntiRecallStore () {
     os_unfair_lock _lock;
 }
@@ -83,6 +85,7 @@ static const NSUInteger kZLModMaxLiveSnapshots = 400;
                          queue:[NSOperationQueue mainQueue]
                     usingBlock:^(__unused NSNotification *note) {
             [self purgeLiveSnapshots];
+            ZLModClearUnhiddenMessages();
         }];
 
         [nc addObserverForName:ZLModPrefsDidChangeNotification
@@ -92,6 +95,7 @@ static const NSUInteger kZLModMaxLiveSnapshots = 400;
             if ([note.object isEqualToString:kZLModAntiRecall] || [note.object isEqualToString:@"*"]) {
                 if (![[ZLModPreferences shared] boolForKey:kZLModAntiRecall]) {
                     [self purgeLiveSnapshots];
+                    ZLModClearUnhiddenMessages();
                 }
             }
         }];
@@ -628,15 +632,24 @@ static const NSInteger kZLModActionHideRecall   = 99002;
 
 static os_unfair_lock gUnhiddenLock = OS_UNFAIR_LOCK_INIT;
 static NSMutableSet<NSString *> *gUnhiddenMessageKeys = nil;
+static const char * const kZLModOrigRecallTextKey = "ZLModOrigRecallText";
 
-static NSString *ZLModUnhiddenKey(int64_t gid, int64_t cid) {
-    if (gid > 0) return [NSString stringWithFormat:@"g_%lld", (long long)gid];
-    if (cid > 0) return [NSString stringWithFormat:@"c_%lld", (long long)cid];
+static NSString *ZLModUnhiddenKey(NSString *accountScope, NSString *threadId, int64_t gid, int64_t cid) {
+    NSString *scope = accountScope.length ? accountScope : (ZLModCurrentAccountScope() ?: @"anon");
+    NSString *tid = threadId.length ? threadId : @"*";
+    if (gid > 0) return [NSString stringWithFormat:@"%@:%@:g_%lld", scope, tid, (long long)gid];
+    if (cid > 0) return [NSString stringWithFormat:@"%@:%@:c_%lld", scope, tid, (long long)cid];
     return nil;
 }
 
-static BOOL ZLModIsMessageUnhidden(int64_t gid, int64_t cid) {
-    NSString *key = ZLModUnhiddenKey(gid, cid);
+static void ZLModClearUnhiddenMessages(void) {
+    os_unfair_lock_lock(&gUnhiddenLock);
+    [gUnhiddenMessageKeys removeAllObjects];
+    os_unfair_lock_unlock(&gUnhiddenLock);
+}
+
+static BOOL ZLModIsMessageUnhidden(NSString *accountScope, NSString *threadId, int64_t gid, int64_t cid) {
+    NSString *key = ZLModUnhiddenKey(accountScope, threadId, gid, cid);
     if (key.length == 0) return NO;
     os_unfair_lock_lock(&gUnhiddenLock);
     BOOL exists = [gUnhiddenMessageKeys containsObject:key];
@@ -644,8 +657,8 @@ static BOOL ZLModIsMessageUnhidden(int64_t gid, int64_t cid) {
     return exists;
 }
 
-static void ZLModSetMessageUnhidden(int64_t gid, int64_t cid, BOOL unhidden) {
-    NSString *key = ZLModUnhiddenKey(gid, cid);
+static void ZLModSetMessageUnhidden(NSString *accountScope, NSString *threadId, int64_t gid, int64_t cid, BOOL unhidden) {
+    NSString *key = ZLModUnhiddenKey(accountScope, threadId, gid, cid);
     if (key.length == 0) return;
     os_unfair_lock_lock(&gUnhiddenLock);
     if (!gUnhiddenMessageKeys) {
@@ -716,53 +729,75 @@ static NSString *ZLModResolveRecalledText(id chat, int64_t gid, int64_t cid) {
     return nil;
 }
 
-static BOOL ZLModUpdateTextInViewHierarchy(UIView *view, NSString *newText, BOOL isUnhiding) {
-    if (!view) return NO;
-    BOOL replaced = NO;
+static UILabel *ZLModFindRecallLabel(UIView *view, BOOL isUnhiding) {
+    if (!view) return nil;
     if ([view isKindOfClass:[UILabel class]]) {
         UILabel *lbl = (UILabel *)view;
-        NSString *curText = lbl.text;
-        if (curText.length > 0) {
-            BOOL looksLikeRecalled = [curText localizedCaseInsensitiveContainsString:@"thu hồi"] ||
-                                     [curText localizedCaseInsensitiveContainsString:@"recalled"];
-            if (isUnhiding && looksLikeRecalled) {
-                objc_setAssociatedObject(lbl, "ZLModOrigRecallText", curText, OBJC_ASSOCIATION_COPY_NONATOMIC);
-                lbl.text = newText;
-                lbl.numberOfLines = 0;
-                [lbl sizeToFit];
-                replaced = YES;
-            } else if (!isUnhiding && !looksLikeRecalled) {
-                NSString *orig = objc_getAssociatedObject(lbl, "ZLModOrigRecallText");
-                lbl.text = orig.length ? orig : @"Tin nhắn đã được thu hồi";
-                [lbl sizeToFit];
-                replaced = YES;
+        if (isUnhiding) {
+            NSString *curText = lbl.text;
+            if (curText.length > 0) {
+                BOOL looksLikeRecalled = [curText localizedCaseInsensitiveContainsString:@"thu hồi"] ||
+                                         [curText localizedCaseInsensitiveContainsString:@"recalled"];
+                if (looksLikeRecalled) {
+                    return lbl;
+                }
+            }
+        } else {
+            NSString *orig = objc_getAssociatedObject(lbl, kZLModOrigRecallTextKey);
+            if (orig.length > 0) {
+                return lbl;
             }
         }
     }
     for (UIView *sub in view.subviews) {
-        if (ZLModUpdateTextInViewHierarchy(sub, newText, isUnhiding)) {
-            replaced = YES;
-        }
+        UILabel *found = ZLModFindRecallLabel(sub, isUnhiding);
+        if (found) return found;
     }
-    return replaced;
+    return nil;
+}
+
+static BOOL ZLModUpdateTextInViewHierarchy(UIView *view, NSString *newText, BOOL isUnhiding) {
+    UILabel *targetLabel = ZLModFindRecallLabel(view, isUnhiding);
+    if (!targetLabel) return NO;
+
+    if (isUnhiding) {
+        NSString *curText = targetLabel.text;
+        objc_setAssociatedObject(targetLabel, kZLModOrigRecallTextKey, curText, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        targetLabel.text = newText;
+        targetLabel.numberOfLines = 0;
+        [targetLabel sizeToFit];
+        return YES;
+    } else {
+        NSString *orig = objc_getAssociatedObject(targetLabel, kZLModOrigRecallTextKey);
+        if (orig.length > 0) {
+            targetLabel.text = orig;
+            objc_setAssociatedObject(targetLabel, kZLModOrigRecallTextKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+            [targetLabel sizeToFit];
+            return YES;
+        }
+        return NO;
+    }
+}
+
+static UIView *ZLModFindContainingCellOrRoot(UIView *view) {
+    UIView *p = view;
+    UIView *root = view;
+    while (p) {
+        root = p;
+        if ([p isKindOfClass:[UITableViewCell class]] || [p isKindOfClass:[UICollectionViewCell class]]) {
+            return p;
+        }
+        p = p.superview;
+    }
+    return root;
 }
 
 static void ZLModApplyRecallTextInPlace(UIView *menuButton, NSString *text, BOOL isUnhiding) {
     if (!menuButton) return;
-    ZLModUpdateTextInViewHierarchy(menuButton, text, isUnhiding);
-    [menuButton setNeedsLayout];
-    [menuButton layoutIfNeeded];
-
-    UIView *p = menuButton.superview;
-    while (p) {
-        ZLModUpdateTextInViewHierarchy(p, text, isUnhiding);
-        [p setNeedsLayout];
-        [p layoutIfNeeded];
-        if ([p isKindOfClass:[UITableViewCell class]] || [p isKindOfClass:[UICollectionViewCell class]]) {
-            break;
-        }
-        p = p.superview;
-    }
+    UIView *container = ZLModFindContainingCellOrRoot(menuButton);
+    ZLModUpdateTextInViewHierarchy(container, text, isUnhiding);
+    [container setNeedsLayout];
+    [container layoutIfNeeded];
 }
 
 static id ZLModMakeRecallMenuItem(id template, NSString *title, NSString *symbolName, NSInteger actionId) {
@@ -1135,7 +1170,11 @@ void ZLModAntiRecallInstall(void) {
                 int64_t cid = ZLModSafeInt64Property(selfObj, sel_registerName("clientId"), 0);
                 if (gid <= 0 && cid <= 0) return origPreview;
 
-                if (ZLModIsMessageUnhidden(gid, cid)) {
+                NSString *scope = ZLModCurrentAccountScope();
+                NSString *tid = ZLModSafeStringProperty(selfObj, sel_registerName("threadId")) ?:
+                                ZLModSafeStringProperty(selfObj, sel_registerName("tuid"));
+
+                if (ZLModIsMessageUnhidden(scope, tid, gid, cid)) {
                     NSString *unhiddenText = ZLModResolveRecalledText(selfObj, gid, cid);
                     if (unhiddenText.length > 0) return unhiddenText;
                 }
@@ -1157,9 +1196,11 @@ void ZLModAntiRecallInstall(void) {
                     return origMsg;
                 }
                 int64_t gid = 0, cid = 0;
-                ZLModExtractChatEntityFields(selfObj, nil, &gid, &cid, NULL, NULL, NULL, NULL, NULL);
+                NSString *tid = nil;
+                ZLModExtractChatEntityFields(selfObj, nil, &gid, &cid, NULL, NULL, NULL, &tid, NULL);
                 if (gid > 0 || cid > 0) {
-                    if (ZLModIsMessageUnhidden(gid, cid)) {
+                    NSString *scope = ZLModCurrentAccountScope();
+                    if (ZLModIsMessageUnhidden(scope, tid, gid, cid)) {
                         NSString *unhidden = ZLModResolveRecalledText(selfObj, gid, cid);
                         if (unhidden.length > 0) return unhidden;
                     }
@@ -1184,9 +1225,11 @@ void ZLModAntiRecallInstall(void) {
                         id chat = ZLModSafeObjectProperty(selfObj, sel_registerName("chatEntity"));
                         if (chat) {
                             int64_t gid = 0, cid = 0;
-                            ZLModExtractChatEntityFields(chat, nil, &gid, &cid, NULL, NULL, NULL, NULL, NULL);
+                            NSString *tid = nil;
+                            ZLModExtractChatEntityFields(chat, nil, &gid, &cid, NULL, NULL, NULL, &tid, NULL);
+                            NSString *scope = ZLModCurrentAccountScope();
                             BOOL isRecalled = ZLModIsChatRecalled(chat);
-                            BOOL isUnhidden = ZLModIsMessageUnhidden(gid, cid);
+                            BOOL isUnhidden = ZLModIsMessageUnhidden(scope, tid, gid, cid);
 
                             if (isRecalled || isUnhidden) {
                                 NSMutableArray *mutableItems = [itemArray isKindOfClass:[NSArray class]]
@@ -1232,8 +1275,10 @@ void ZLModAntiRecallInstall(void) {
                 if (itemType == kZLModActionUnhideRecall) {
                     id chat = ZLModSafeObjectProperty(selfObj, sel_registerName("chatEntity"));
                     int64_t gid = 0, cid = 0;
-                    ZLModExtractChatEntityFields(chat, nil, &gid, &cid, NULL, NULL, NULL, NULL, NULL);
-                    ZLModSetMessageUnhidden(gid, cid, YES);
+                    NSString *tid = nil;
+                    ZLModExtractChatEntityFields(chat, nil, &gid, &cid, NULL, NULL, NULL, &tid, NULL);
+                    NSString *scope = ZLModCurrentAccountScope();
+                    ZLModSetMessageUnhidden(scope, tid, gid, cid, YES);
 
                     NSString *decrypted = ZLModResolveRecalledText(chat, gid, cid);
                     UIImage *photo = ZLModExtractPhotoFromChat(chat);
@@ -1282,8 +1327,10 @@ void ZLModAntiRecallInstall(void) {
                 if (itemType == kZLModActionHideRecall) {
                     id chat = ZLModSafeObjectProperty(selfObj, sel_registerName("chatEntity"));
                     int64_t gid = 0, cid = 0;
-                    ZLModExtractChatEntityFields(chat, nil, &gid, &cid, NULL, NULL, NULL, NULL, NULL);
-                    ZLModSetMessageUnhidden(gid, cid, NO);
+                    NSString *tid = nil;
+                    ZLModExtractChatEntityFields(chat, nil, &gid, &cid, NULL, NULL, NULL, &tid, NULL);
+                    NSString *scope = ZLModCurrentAccountScope();
+                    ZLModSetMessageUnhidden(scope, tid, gid, cid, NO);
 
                     NSString *placeholder = @"Tin nhắn đã được thu hồi";
 

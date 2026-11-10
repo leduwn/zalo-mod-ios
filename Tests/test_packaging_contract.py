@@ -210,6 +210,29 @@ class PackagingContractTests(unittest.TestCase):
                 "Payload/Zalo.app/Frameworks/libZLMod.dylib",
                 report["embedded_dylibs_and_mod_files"],
             )
+            # Verify installability gate
+            inst = report.get("installability", {})
+            self.assertFalse(inst.get("directly_installable"))
+            self.assertEqual("UNSIGNED_ARCHIVE", inst.get("state"))
+
+    def test_preflight_require_installable_rejects_unsigned_package(self):
+        preflight = load_module("zlmod_preflight", PREFLIGHT)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_ipa = Path(tmp) / "unsigned.ipa"
+            main_plist = plistlib.dumps(
+                {
+                    "CFBundleIdentifier": "vn.com.vng.zingalo2",
+                    "CFBundleExecutable": "Zalo",
+                    "CFBundleShortVersionString": "261002",
+                    "CFBundleVersion": "261002802",
+                }
+            )
+            with zipfile.ZipFile(tmp_ipa, "w") as zf:
+                zf.writestr("Payload/Zalo.app/Info.plist", main_plist)
+                zf.writestr("Payload/Zalo.app/Zalo", make_synthetic_macho64(filetype=2, include_code_sig=False))
+
+            ret = preflight.main([str(tmp_ipa), "--require-installable"])
+            self.assertEqual(1, ret)
 
     def test_repackage_rejects_wrong_dylib_filename(self):
         packager = load_module("zlmod_packager", PACKAGER)

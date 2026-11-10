@@ -310,7 +310,13 @@ def validate_ipa(ipa_path: Path, dylib_name: str, expected_bundle_id: str, expec
         print(f"[Forensics] Unencrypted Mach-Os (cryptid=0): {macho_count - encrypted_count}/{macho_count}")
         assert encrypted_count == 0, f"Found {encrypted_count} encrypted Mach-O binaries!"
         assert macho_count > 1, "Expected the app executable and injected dylib"
-        print(f"[OK] Forensics validation passed: all {macho_count} Mach-Os cryptid=0, dylib and load command verified!")
+        print(f"[OK] Forensics validation passed: all {macho_count} Mach-Os cryptid=0, dylib and load command verified.")
+        print("\n================================================================================")
+        print("[!] INSTALLABILITY NOTICE: This archive is an UNSIGNED PACKAGE.")
+        print("    It is NOT directly installable on device without re-signing.")
+        print("    - For Sideloadly / xtool: import this unsigned IPA and sign with your Apple ID.")
+        print("    - For TrollStore: ensure ldid / pseudo-signing is applied.")
+        print("================================================================================")
 
 
 def build_parser() -> argparse.ArgumentParser:
