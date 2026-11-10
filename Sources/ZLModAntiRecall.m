@@ -621,9 +621,43 @@ static void ZLModSnapshotEntities(id container, NSString *fallbackThreadId) {
     });
 }
 
-#pragma mark - Chat Bubble "Hiện" (Unhide Recalled Message) feature
+#pragma mark - Chat Bubble "Hiện / Ẩn" (In-Place Unhide Recalled Message) feature
 
 static const NSInteger kZLModActionUnhideRecall = 99001;
+static const NSInteger kZLModActionHideRecall   = 99002;
+
+static os_unfair_lock gUnhiddenLock = OS_UNFAIR_LOCK_INIT;
+static NSMutableSet<NSString *> *gUnhiddenMessageKeys = nil;
+
+static NSString *ZLModUnhiddenKey(int64_t gid, int64_t cid) {
+    if (gid > 0) return [NSString stringWithFormat:@"g_%lld", (long long)gid];
+    if (cid > 0) return [NSString stringWithFormat:@"c_%lld", (long long)cid];
+    return nil;
+}
+
+static BOOL ZLModIsMessageUnhidden(int64_t gid, int64_t cid) {
+    NSString *key = ZLModUnhiddenKey(gid, cid);
+    if (key.length == 0) return NO;
+    os_unfair_lock_lock(&gUnhiddenLock);
+    BOOL exists = [gUnhiddenMessageKeys containsObject:key];
+    os_unfair_lock_unlock(&gUnhiddenLock);
+    return exists;
+}
+
+static void ZLModSetMessageUnhidden(int64_t gid, int64_t cid, BOOL unhidden) {
+    NSString *key = ZLModUnhiddenKey(gid, cid);
+    if (key.length == 0) return;
+    os_unfair_lock_lock(&gUnhiddenLock);
+    if (!gUnhiddenMessageKeys) {
+        gUnhiddenMessageKeys = [NSMutableSet set];
+    }
+    if (unhidden) {
+        [gUnhiddenMessageKeys addObject:key];
+    } else {
+        [gUnhiddenMessageKeys removeObject:key];
+    }
+    os_unfair_lock_unlock(&gUnhiddenLock);
+}
 
 static UIImage *ZLModExtractPhotoFromChat(id chat) {
     if (!chat) return nil;
@@ -639,6 +673,142 @@ static UIImage *ZLModExtractPhotoFromChat(id chat) {
         }
     }
     return nil;
+}
+
+static NSString *ZLModResolveRecalledText(id chat, int64_t gid, int64_t cid) {
+    NSString *scope = ZLModCurrentAccountScope();
+    ZLModAntiRecallStore *store = [ZLModAntiRecallStore shared];
+
+    // 1. Persistent decrypted store
+    NSString *decrypted = [store recalledTextForGlobalId:gid clientId:cid];
+    if (decrypted.length > 0 &&
+        ![decrypted localizedCaseInsensitiveContainsString:@"thu hồi"] &&
+        ![decrypted localizedCaseInsensitiveContainsString:@"recalled"]) {
+        return decrypted;
+    }
+
+    // 2. Live snapshot
+    ZLModLiveMessageSnapshot *snap = [store liveSnapshotForAccountScope:scope globalId:gid clientId:cid];
+    if (snap.message.length > 0 &&
+        ![snap.message localizedCaseInsensitiveContainsString:@"thu hồi"] &&
+        ![snap.message localizedCaseInsensitiveContainsString:@"recalled"]) {
+        return snap.message;
+    }
+
+    // 3. ChatEntity fields
+    if (chat) {
+        for (NSString *s in @[@"originTextRecallMsg", @"originText"]) {
+            NSString *v = ZLModSafeStringProperty(chat, NSSelectorFromString(s));
+            if (v.length > 0 &&
+                ![v localizedCaseInsensitiveContainsString:@"thu hồi"] &&
+                ![v localizedCaseInsensitiveContainsString:@"recalled"]) {
+                return v;
+            }
+        }
+    }
+
+    // 4. Formatted notice fallback
+    if (gid > 0 || cid > 0) {
+        NSString *notice = [store formattedNoticeForGlobalId:gid clientId:cid];
+        if (notice.length > 0) return notice;
+    }
+
+    return nil;
+}
+
+static BOOL ZLModUpdateTextInViewHierarchy(UIView *view, NSString *newText, BOOL isUnhiding) {
+    if (!view) return NO;
+    BOOL replaced = NO;
+    if ([view isKindOfClass:[UILabel class]]) {
+        UILabel *lbl = (UILabel *)view;
+        NSString *curText = lbl.text;
+        if (curText.length > 0) {
+            BOOL looksLikeRecalled = [curText localizedCaseInsensitiveContainsString:@"thu hồi"] ||
+                                     [curText localizedCaseInsensitiveContainsString:@"recalled"];
+            if (isUnhiding && looksLikeRecalled) {
+                objc_setAssociatedObject(lbl, "ZLModOrigRecallText", curText, OBJC_ASSOCIATION_COPY_NONATOMIC);
+                lbl.text = newText;
+                lbl.numberOfLines = 0;
+                [lbl sizeToFit];
+                replaced = YES;
+            } else if (!isUnhiding && !looksLikeRecalled) {
+                NSString *orig = objc_getAssociatedObject(lbl, "ZLModOrigRecallText");
+                lbl.text = orig.length ? orig : @"Tin nhắn đã được thu hồi";
+                [lbl sizeToFit];
+                replaced = YES;
+            }
+        }
+    }
+    for (UIView *sub in view.subviews) {
+        if (ZLModUpdateTextInViewHierarchy(sub, newText, isUnhiding)) {
+            replaced = YES;
+        }
+    }
+    return replaced;
+}
+
+static void ZLModApplyRecallTextInPlace(UIView *menuButton, NSString *text, BOOL isUnhiding) {
+    if (!menuButton) return;
+    ZLModUpdateTextInViewHierarchy(menuButton, text, isUnhiding);
+    [menuButton setNeedsLayout];
+    [menuButton layoutIfNeeded];
+
+    UIView *p = menuButton.superview;
+    while (p) {
+        ZLModUpdateTextInViewHierarchy(p, text, isUnhiding);
+        [p setNeedsLayout];
+        [p layoutIfNeeded];
+        if ([p isKindOfClass:[UITableViewCell class]] || [p isKindOfClass:[UICollectionViewCell class]]) {
+            break;
+        }
+        p = p.superview;
+    }
+}
+
+static id ZLModMakeRecallMenuItem(id template, NSString *title, NSString *symbolName, NSInteger actionId) {
+    Class vmClass = NSClassFromString(@"ContextMenuViewModel");
+    if (!vmClass) return nil;
+    id vm = [[vmClass alloc] init];
+    if (!vm) return nil;
+
+    if (template && [template isKindOfClass:vmClass]) {
+        static NSArray<NSArray<NSString *> *> *pairs;
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            pairs = @[
+                @[@"textColor", @"setTextColor:"],
+                @[@"iconColor", @"setIconColor:"],
+                @[@"disabledTextColor", @"setDisabledTextColor:"],
+                @[@"disabledIconColor", @"setDisabledIconColor:"],
+            ];
+        });
+        for (NSArray<NSString *> *pair in pairs) {
+            SEL getter = NSSelectorFromString(pair[0]);
+            SEL setter = NSSelectorFromString(pair[1]);
+            if (![template respondsToSelector:getter] || ![vm respondsToSelector:setter]) continue;
+            id value = ZLModSafeObjectProperty(template, getter);
+            if (value) ((void (*)(id, SEL, id))objc_msgSend)(vm, setter, value);
+        }
+    }
+
+    SEL setTextSel = sel_registerName("setText:");
+    if ([vm respondsToSelector:setTextSel]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(vm, setTextSel, title ?: @"");
+    }
+    SEL setMenuTypeSel = sel_registerName("setMenuType:");
+    if ([vm respondsToSelector:setMenuTypeSel]) {
+        ((void (*)(id, SEL, NSInteger))objc_msgSend)(vm, setMenuTypeSel, actionId);
+    }
+    UIImage *icon = symbolName.length > 0 ? [UIImage systemImageNamed:symbolName] : nil;
+    if (!icon) icon = [UIImage systemImageNamed:@"eye"];
+    if (icon) {
+        icon = [icon imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+        SEL setIconSel = sel_registerName("setIconImage:");
+        if ([vm respondsToSelector:setIconSel]) {
+            ((void (*)(id, SEL, id))objc_msgSend)(vm, setIconSel, icon);
+        }
+    }
+    return vm;
 }
 
 @interface ZLModPhotoPreviewViewController : UIViewController
@@ -769,50 +939,6 @@ static BOOL ZLModIsChatRecalled(id chat) {
     return NO;
 }
 
-static id ZLModMakeUnhideMenuItem(id template) {
-    Class vmClass = NSClassFromString(@"ContextMenuViewModel");
-    if (!vmClass) return nil;
-    id vm = [[vmClass alloc] init];
-    if (!vm) return nil;
-
-    if (template && [template isKindOfClass:vmClass]) {
-        static NSArray<NSArray<NSString *> *> *pairs;
-        static dispatch_once_t once;
-        dispatch_once(&once, ^{
-            pairs = @[
-                @[@"textColor", @"setTextColor:"],
-                @[@"iconColor", @"setIconColor:"],
-                @[@"disabledTextColor", @"setDisabledTextColor:"],
-                @[@"disabledIconColor", @"setDisabledIconColor:"],
-            ];
-        });
-        for (NSArray<NSString *> *pair in pairs) {
-            SEL getter = NSSelectorFromString(pair[0]);
-            SEL setter = NSSelectorFromString(pair[1]);
-            if (![template respondsToSelector:getter] || ![vm respondsToSelector:setter]) continue;
-            id value = ZLModSafeObjectProperty(template, getter);
-            if (value) ((void (*)(id, SEL, id))objc_msgSend)(vm, setter, value);
-        }
-    }
-
-    SEL setTextSel = sel_registerName("setText:");
-    if ([vm respondsToSelector:setTextSel]) {
-        ((void (*)(id, SEL, id))objc_msgSend)(vm, setTextSel, @"Hiện");
-    }
-    SEL setMenuTypeSel = sel_registerName("setMenuType:");
-    if ([vm respondsToSelector:setMenuTypeSel]) {
-        ((void (*)(id, SEL, NSInteger))objc_msgSend)(vm, setMenuTypeSel, kZLModActionUnhideRecall);
-    }
-    UIImage *icon = [UIImage systemImageNamed:@"eye"];
-    if (!icon) icon = [UIImage systemImageNamed:@"eye.fill"];
-    if (icon) {
-        icon = [icon imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-        SEL setIconSel = sel_registerName("setIconImage:");
-        if ([vm respondsToSelector:setIconSel]) {
-            ((void (*)(id, SEL, id))objc_msgSend)(vm, setIconSel, icon);
-        }
-    }
-    return vm;
 }
 
 static void ZLModPresentRecalledMessageContent(id chat, id presenter) {
@@ -1011,15 +1137,43 @@ void ZLModAntiRecallInstall(void) {
                 int64_t cid = ZLModSafeInt64Property(selfObj, sel_registerName("clientId"), 0);
                 if (gid <= 0 && cid <= 0) return origPreview;
 
+                if (ZLModIsMessageUnhidden(gid, cid)) {
+                    NSString *unhiddenText = ZLModResolveRecalledText(selfObj, gid, cid);
+                    if (unhiddenText.length > 0) return unhiddenText;
+                }
+
                 NSString *notice = [[ZLModAntiRecallStore shared] formattedNoticeForGlobalId:gid clientId:cid];
                 return (notice.length > 0) ? notice : origPreview;
             })) {
                 installed++;
             }
         }
+
+        // 3b. ChatEntity -message [@16@0:8]
+        SEL messageSel = sel_registerName("message");
+        if (ZLModClassHasInstanceMethod(chatEntityCls, messageSel)) {
+            IMP orig = class_getMethodImplementation(chatEntityCls, messageSel);
+            if (ZLModReplaceMethod(chatEntityCls, messageSel, 0, "@", ^id(id selfObj) {
+                id origMsg = orig ? ((id (*)(id, SEL))orig)(selfObj, messageSel) : nil;
+                if (![[ZLModPreferences shared] boolForKey:kZLModAntiRecall]) {
+                    return origMsg;
+                }
+                int64_t gid = 0, cid = 0;
+                ZLModExtractChatEntityFields(selfObj, nil, &gid, &cid, NULL, NULL, NULL, NULL, NULL);
+                if (gid > 0 || cid > 0) {
+                    if (ZLModIsMessageUnhidden(gid, cid)) {
+                        NSString *unhidden = ZLModResolveRecalledText(selfObj, gid, cid);
+                        if (unhidden.length > 0) return unhidden;
+                    }
+                }
+                return origMsg;
+            })) {
+                installed++;
+            }
+        }
     }
 
-    // 4. MenuButton hooks for Chat Bubble "Hiện" button
+    // 4. MenuButton hooks for Chat Bubble "Hiện / Ẩn" in-place feature
     Class menuBtnCls = NSClassFromString(@"MenuButton");
     if (menuBtnCls) {
         SEL showMenuSel = sel_registerName("showContextMenuViewWithMenuItemArray:hasReaction:");
@@ -1030,26 +1184,37 @@ void ZLModAntiRecallInstall(void) {
                 @try {
                     if ([[ZLModPreferences shared] boolForKey:kZLModAntiRecall]) {
                         id chat = ZLModSafeObjectProperty(selfObj, sel_registerName("chatEntity"));
-                        if (chat && ZLModIsChatRecalled(chat)) {
-                            NSMutableArray *mutableItems = [itemArray isKindOfClass:[NSArray class]]
-                                ? [itemArray mutableCopy]
-                                : [NSMutableArray array];
+                        if (chat) {
+                            int64_t gid = 0, cid = 0;
+                            ZLModExtractChatEntityFields(chat, nil, &gid, &cid, NULL, NULL, NULL, NULL, NULL);
+                            BOOL isRecalled = ZLModIsChatRecalled(chat);
+                            BOOL isUnhidden = ZLModIsMessageUnhidden(gid, cid);
 
-                            BOOL alreadyHasUnhide = NO;
-                            for (id it in mutableItems) {
-                                if (ZLModSafeInt64Property(it, sel_registerName("menuType"), 0) == kZLModActionUnhideRecall) {
-                                    alreadyHasUnhide = YES;
-                                    break;
+                            if (isRecalled || isUnhidden) {
+                                NSMutableArray *mutableItems = [itemArray isKindOfClass:[NSArray class]]
+                                    ? [itemArray mutableCopy]
+                                    : [NSMutableArray array];
+
+                                NSIndexSet *existing = [mutableItems indexesOfObjectsPassingTest:^BOOL(id obj, NSUInteger idx, BOOL *stop) {
+                                    NSInteger mt = (NSInteger)ZLModSafeInt64Property(obj, sel_registerName("menuType"), 0);
+                                    return (mt == kZLModActionUnhideRecall || mt == kZLModActionHideRecall);
+                                }];
+                                if (existing.count > 0) {
+                                    [mutableItems removeObjectsAtIndexes:existing];
                                 }
-                            }
-                            if (!alreadyHasUnhide) {
+
                                 id template = mutableItems.firstObject;
-                                id unhideItem = ZLModMakeUnhideMenuItem(template);
-                                if (unhideItem) {
-                                    [mutableItems insertObject:unhideItem atIndex:0];
+                                id menuItem = nil;
+                                if (isUnhidden) {
+                                    menuItem = ZLModMakeRecallMenuItem(template, @"Ẩn", @"eye.slash", kZLModActionHideRecall);
+                                } else {
+                                    menuItem = ZLModMakeRecallMenuItem(template, @"Hiện", @"eye", kZLModActionUnhideRecall);
                                 }
+                                if (menuItem) {
+                                    [mutableItems insertObject:menuItem atIndex:0];
+                                }
+                                finalArray = mutableItems;
                             }
-                            finalArray = mutableItems;
                         }
                     }
                 } @catch (__unused NSException *e) {}
@@ -1068,14 +1233,81 @@ void ZLModAntiRecallInstall(void) {
             if (ZLModReplaceMethod(menuBtnCls, tapSel, 2, "v", ^(id selfObj, id menuView, NSInteger itemType) {
                 if (itemType == kZLModActionUnhideRecall) {
                     id chat = ZLModSafeObjectProperty(selfObj, sel_registerName("chatEntity"));
-                    ZLModPresentRecalledMessageContent(chat, selfObj);
+                    int64_t gid = 0, cid = 0;
+                    ZLModExtractChatEntityFields(chat, nil, &gid, &cid, NULL, NULL, NULL, NULL, NULL);
+                    ZLModSetMessageUnhidden(gid, cid, YES);
+
+                    NSString *decrypted = ZLModResolveRecalledText(chat, gid, cid);
+                    UIImage *photo = ZLModExtractPhotoFromChat(chat);
+
+                    NSString *displayText = decrypted.length > 0
+                        ? decrypted
+                        : (photo ? @"[Hình ảnh đã thu hồi]" : @"[Tin nhắn đã thu hồi]");
+
+                    // 1. Update text in-place in view hierarchy
+                    ZLModApplyRecallTextInPlace((UIView *)selfObj, displayText, YES);
+
+                    // 2. Update ChatEntity and trigger cell layout reload
+                    if (chat) {
+                        SEL setOriginSel = sel_registerName("set_originTextRecallMsg:");
+                        if ([chat respondsToSelector:setOriginSel]) {
+                            ((void (*)(id, SEL, id))objc_msgSend)(chat, setOriginSel, displayText);
+                        }
+                        SEL reloadSel = sel_registerName("reloadCellIfNeed");
+                        if ([chat respondsToSelector:reloadSel]) {
+                            ((void (*)(id, SEL))objc_msgSend)(chat, reloadSel);
+                        }
+                    }
+
+                    // 3. If photo, present preview modal so user can zoom/save/copy
+                    if (photo) {
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                            UIViewController *top = ZLModTopPresenterViewController();
+                            if (top) {
+                                ZLModPhotoPreviewViewController *pvc = [[ZLModPhotoPreviewViewController alloc] init];
+                                pvc.photo = photo;
+                                pvc.senderName = @"Ảnh đã thu hồi";
+                                pvc.modalPresentationStyle = UIModalPresentationFullScreen;
+                                [top presentViewController:pvc animated:YES completion:nil];
+                            }
+                        });
+                    }
 
                     SEL dismissSel = sel_registerName("contextMenuViewWillDismiss:");
                     if ([selfObj respondsToSelector:dismissSel]) {
                         ((void (*)(id, SEL, id))objc_msgSend)(selfObj, dismissSel, menuView);
                     }
+                    ZLModShowToast(@"Đã hiện tin nhắn");
                     return;
                 }
+
+                if (itemType == kZLModActionHideRecall) {
+                    id chat = ZLModSafeObjectProperty(selfObj, sel_registerName("chatEntity"));
+                    int64_t gid = 0, cid = 0;
+                    ZLModExtractChatEntityFields(chat, nil, &gid, &cid, NULL, NULL, NULL, NULL, NULL);
+                    ZLModSetMessageUnhidden(gid, cid, NO);
+
+                    NSString *placeholder = @"Tin nhắn đã được thu hồi";
+
+                    // 1. In-place restore in view hierarchy
+                    ZLModApplyRecallTextInPlace((UIView *)selfObj, placeholder, NO);
+
+                    // 2. Update ChatEntity
+                    if (chat) {
+                        SEL reloadSel = sel_registerName("reloadCellIfNeed");
+                        if ([chat respondsToSelector:reloadSel]) {
+                            ((void (*)(id, SEL))objc_msgSend)(chat, reloadSel);
+                        }
+                    }
+
+                    SEL dismissSel = sel_registerName("contextMenuViewWillDismiss:");
+                    if ([selfObj respondsToSelector:dismissSel]) {
+                        ((void (*)(id, SEL, id))objc_msgSend)(selfObj, dismissSel, menuView);
+                    }
+                    ZLModShowToast(@"Đã ẩn tin nhắn");
+                    return;
+                }
+
                 if (orig) {
                     ((void (*)(id, SEL, id, NSInteger))orig)(selfObj, tapSel, menuView, itemType);
                 }

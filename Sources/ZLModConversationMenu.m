@@ -567,7 +567,10 @@ static NSUInteger ZLModInstallInboxContextMenuHooks(void) {
             BOOL unread = [policyStore isLocalUnreadForAccountScope:scope conversationType:ctype threadId:tid];
             BOOL hasNote = ([[ZLModPrivateNotesStore shared] noteForThreadId:tid].length > 0);
 
-            NSMutableArray *combined = [(NSArray *)origList mutableCopy];
+            NSArray *origArray = (NSArray *)origList;
+            BOOL isSectioned = (origArray.count > 0 && [origArray.firstObject isKindOfClass:[NSArray class]]);
+
+            NSMutableArray *customItems = [NSMutableArray arrayWithCapacity:4];
             id a1 = ZLModMakeContextMenuAction(kZLModActionToggleSeen,
                                                hideSeen ? @"Tắt Ẩn đã xem (Đang bật)" : @"Bật Ẩn đã xem cuộc trò chuyện",
                                                hideSeen ? @"eye.fill" : @"eye.slash",
@@ -588,11 +591,22 @@ static NSUInteger ZLModInstallInboxContextMenuHooks(void) {
                                                hasNote ? @"note.text" : @"note.text.badge.plus",
                                                session,
                                                template);
-            if (a1) [combined addObject:a1];
-            if (a2) [combined addObject:a2];
-            if (a3) [combined addObject:a3];
-            if (a4) [combined addObject:a4];
-            return [combined copy];
+            if (a1) [customItems addObject:a1];
+            if (a2) [customItems addObject:a2];
+            if (a3) [customItems addObject:a3];
+            if (a4) [customItems addObject:a4];
+
+            if (isSectioned) {
+                if (customItems.count == 0) return origList;
+                NSMutableArray *sections = [origArray mutableCopy];
+                NSUInteger insertIdx = (sections.count > 1) ? (sections.count - 1) : sections.count;
+                [sections insertObject:[customItems copy] atIndex:insertIdx];
+                return [sections copy];
+            } else {
+                NSMutableArray *combined = [origArray mutableCopy];
+                [combined addObjectsFromArray:customItems];
+                return [combined copy];
+            }
         })) {
             installed++;
         }
