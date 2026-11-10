@@ -72,6 +72,11 @@ class Phase2ContractTests(unittest.TestCase):
         self.assertIn("ZLModDelaySendStatePending", utils)
         self.assertIn("ZLModDelaySendStateDispatching", utils)
 
+    def test_class_enumeration_never_messages_arbitrary_classes(self):
+        engine = (SOURCES / "ZLModHookEngine.m").read_text(encoding="utf-8")
+        self.assertNotIn("bundleForClass", engine)
+        self.assertIn("class_getImageName", engine)
+
     def test_anchors_manifest_is_well_formed(self):
         lines = [
             line.strip()

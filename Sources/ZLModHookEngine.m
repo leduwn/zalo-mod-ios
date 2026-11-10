@@ -6,10 +6,13 @@
 
 BOOL ZLModIsAppRelatedClass(Class cls) {
     if (!cls) return NO;
-    NSBundle *bundle = [NSBundle bundleForClass:cls];
-    NSString *path = [bundle bundlePath];
-    if (!path) return NO;
-    return [path containsString:@"/Zalo.app/"];
+    // Never message arbitrary classes here: objc_getClassList also returns classes whose
+    // superclass is missing (weak-linked), and any message send would trip _objc_fatal.
+    // class_getImageName only reads runtime metadata and is always safe.
+    const char *image = class_getImageName(cls);
+    if (!image) return NO;
+    if (strstr(image, "/libZLMod.dylib") != NULL) return NO;
+    return strstr(image, "/Zalo.app/") != NULL;
 }
 
 BOOL ZLModClassHasInstanceMethod(Class cls, SEL sel) {
