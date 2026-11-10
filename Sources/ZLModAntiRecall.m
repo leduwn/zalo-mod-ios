@@ -763,8 +763,7 @@ static BOOL ZLModIsChatRecalled(id chat) {
 
     int64_t gid = 0, cid = 0;
     ZLModExtractChatEntityFields(chat, nil, &gid, &cid, NULL, NULL, NULL, NULL, NULL);
-    NSString *scope = ZLModCurrentAccountScope();
-    if ([[ZLModAntiRecallStore shared] recordForAccountScope:scope globalId:gid clientId:cid] != nil) {
+    if ([[ZLModAntiRecallStore shared] recalledTextForGlobalId:gid clientId:cid].length > 0) {
         return YES;
     }
     return NO;
@@ -831,8 +830,7 @@ static void ZLModPresentRecalledMessageContent(id chat, id presenter) {
     ZLModAntiRecallStore *store = [ZLModAntiRecallStore shared];
 
     // Check store first
-    NSDictionary *rec = [store recordForAccountScope:scope globalId:gid clientId:cid];
-    NSString *decrypted = [store decryptMessageFromRecord:rec expectedScope:scope];
+    NSString *decrypted = [store recalledTextForGlobalId:gid clientId:cid];
 
     // Also check live snapshot
     if (decrypted.length == 0) {

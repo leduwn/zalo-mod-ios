@@ -12,9 +12,7 @@
 
 typedef void (*ZLModV1Bool)(id, SEL, BOOL);
 
-static const NSInteger kZLModGlassOverlayTag = 0x5A7C;
 static __weak id gTabBarController = nil;
-static __weak UIView *gOverlay = nil;
 static __weak UITabBar *gStyledBar = nil;
 static UITabBarAppearance *gSavedStandard = nil;
 static UITabBarAppearance *gSavedScrollEdge = nil;
