@@ -96,6 +96,7 @@ BOOL ZLModSafeBoolProperty(id obj, SEL sel, BOOL defaultValue);
 int64_t ZLModSafeInt64Property(id obj, SEL sel, int64_t defaultValue);
 double ZLModSafeDoubleProperty(id obj, SEL sel, double defaultValue);
 UIWindow *ZLModActiveKeyWindow(void);
+UIViewController *ZLModTopPresenterViewController(void);
 
 #pragma mark - Diagnostics, hashing & account scope
 

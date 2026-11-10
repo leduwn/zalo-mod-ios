@@ -977,10 +977,6 @@ moveRowAtIndexPath:(NSIndexPath *)sourceIndexPath
     NSString *key = objc_getAssociatedObject(sw, "zlmod.pref.key");
     if (!key) return;
     [[ZLModPreferences shared] setBool:sw.on forKey:key];
-    if ([key isEqualToString:kZLModGlassTabBar]) {
-        [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0]
-                      withRowAnimation:UITableViewRowAnimationNone];
-    }
 }
 
 @end

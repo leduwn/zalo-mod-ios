@@ -529,11 +529,37 @@ static void ZLModExtractChatEntityFields(id chatEntity,
                                          NSString **outSenderId,
                                          NSString **outThreadId,
                                          NSTimeInterval *outTimestamp) {
-    int64_t gid = ZLModSafeInt64Property(chatEntity, sel_registerName("globalId"), 0);
-    int64_t cid = ZLModSafeInt64Property(chatEntity, sel_registerName("clientId"), 0);
-    NSString *msg = ZLModSafeStringProperty(chatEntity, sel_registerName("message"));
-    NSString *senderName = ZLModSafeStringProperty(chatEntity, sel_registerName("displayname"));
-    NSString *senderId = ZLModSafeStringProperty(chatEntity, sel_registerName("fuid"));
+    int64_t gid = 0;
+    for (NSString *s in @[@"globalMsgId", @"globalId", @"globalID", @"global_id"]) {
+        gid = ZLModSafeInt64Property(chatEntity, NSSelectorFromString(s), 0);
+        if (gid > 0) break;
+    }
+    int64_t cid = 0;
+    for (NSString *s in @[@"cliMsgId", @"clientId", @"clientID", @"client_id"]) {
+        cid = ZLModSafeInt64Property(chatEntity, NSSelectorFromString(s), 0);
+        if (cid > 0) break;
+    }
+    NSString *msg = nil;
+    for (NSString *s in @[@"originTextRecallMsg", @"originText", @"message", @"content", @"msgContent", @"desc"]) {
+        NSString *v = ZLModSafeStringProperty(chatEntity, NSSelectorFromString(s));
+        if (v.length > 0 && ![v containsString:@"thu hồi"]) {
+            msg = v;
+            break;
+        }
+    }
+    if (msg.length == 0) {
+        msg = ZLModSafeStringProperty(chatEntity, sel_registerName("message"));
+    }
+    NSString *senderName = nil;
+    for (NSString *s in @[@"displayname", @"senderName", @"senderDisplayName", @"fromName", @"sender"]) {
+        NSString *v = ZLModSafeStringProperty(chatEntity, NSSelectorFromString(s));
+        if (v.length > 0) { senderName = v; break; }
+    }
+    NSString *senderId = nil;
+    for (NSString *s in @[@"fuid", @"senderId", @"fromUid", @"senderUID"]) {
+        NSString *v = ZLModSafeStringProperty(chatEntity, NSSelectorFromString(s));
+        if (v.length > 0) { senderId = v; break; }
+    }
     NSString *tid = ZLModSafeStringProperty(chatEntity, sel_registerName("threadId"));
     if (tid.length == 0) {
         tid = ZLModSafeStringProperty(chatEntity, sel_registerName("tuid"));
@@ -593,6 +619,280 @@ static void ZLModSnapshotEntities(id container, NSString *fallbackThreadId) {
                                                                timestamp:ts];
         }
     });
+}
+
+#pragma mark - Chat Bubble "Hiện" (Unhide Recalled Message) feature
+
+static const NSInteger kZLModActionUnhideRecall = 99001;
+
+static UIImage *ZLModExtractPhotoFromChat(id chat) {
+    if (!chat) return nil;
+    for (NSString *selName in @[@"originalImage", @"thumbImage", @"photo", @"image"]) {
+        id img = ZLModSafeObjectProperty(chat, NSSelectorFromString(selName));
+        if ([img isKindOfClass:[UIImage class]]) return (UIImage *)img;
+    }
+    for (NSString *selName in @[@"hdLocalFilePath", @"chatlocalpath", @"backupFilePathAbs", @"dataFilePath", @"filePathStr"]) {
+        NSString *path = ZLModSafeStringProperty(chat, NSSelectorFromString(selName));
+        if (path.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            UIImage *img = [UIImage imageWithContentsOfFile:path];
+            if (img) return img;
+        }
+    }
+    return nil;
+}
+
+@interface ZLModPhotoPreviewViewController : UIViewController
+@property (nonatomic, strong) UIImage *photo;
+@property (nonatomic, copy) NSString *senderName;
+@end
+
+@implementation ZLModPhotoPreviewViewController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = [UIColor blackColor];
+
+    CGFloat navH = 56.0;
+    CGFloat topSafe = 20.0;
+    if (@available(iOS 11.0, *)) {
+        topSafe = self.view.safeAreaInsets.top > 0 ? self.view.safeAreaInsets.top : 44.0;
+    }
+    
+    UINavigationBar *navBar = [[UINavigationBar alloc] initWithFrame:CGRectMake(0, topSafe, self.view.bounds.size.width, navH)];
+    navBar.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleBottomMargin;
+    navBar.barStyle = UIBarStyleBlack;
+    navBar.translucent = YES;
+    
+    NSString *navTitle = self.senderName.length ? [NSString stringWithFormat:@"Ảnh từ %@", self.senderName] : @"Ảnh đã thu hồi";
+    UINavigationItem *navItem = [[UINavigationItem alloc] initWithTitle:navTitle];
+    UIBarButtonItem *closeBtn = [[UIBarButtonItem alloc] initWithTitle:@"Đóng" style:UIBarButtonItemStyleDone target:self action:@selector(closeTapped)];
+    closeBtn.tintColor = [UIColor whiteColor];
+    navItem.rightBarButtonItem = closeBtn;
+    [navBar pushNavigationItem:navItem animated:NO];
+    [self.view addSubview:navBar];
+
+    CGFloat bottomBarH = 70.0;
+    CGFloat bottomSafe = 20.0;
+    if (@available(iOS 11.0, *)) {
+        bottomSafe = self.view.safeAreaInsets.bottom > 0 ? self.view.safeAreaInsets.bottom : 20.0;
+    }
+    CGFloat totalBottomH = bottomBarH + bottomSafe;
+    CGFloat imgTop = topSafe + navH;
+    CGFloat imgH = self.view.bounds.size.height - imgTop - totalBottomH;
+
+    UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectMake(0, imgTop, self.view.bounds.size.width, imgH)];
+    iv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    iv.contentMode = UIViewContentModeScaleAspectFit;
+    iv.image = self.photo;
+    iv.userInteractionEnabled = YES;
+    [self.view addSubview:iv];
+
+    UIView *bottomBar = [[UIView alloc] initWithFrame:CGRectMake(0, self.view.bounds.size.height - totalBottomH, self.view.bounds.size.width, totalBottomH)];
+    bottomBar.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleTopMargin;
+    bottomBar.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.8];
+    [self.view addSubview:bottomBar];
+
+    UIButton *saveBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    saveBtn.frame = CGRectMake(20, 10, 140, 44);
+    [saveBtn setTitle:@" Lưu vào Ảnh" forState:UIControlStateNormal];
+    [saveBtn setImage:[UIImage systemImageNamed:@"square.and.arrow.down"] forState:UIControlStateNormal];
+    [saveBtn setTintColor:[UIColor whiteColor]];
+    saveBtn.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+    [saveBtn addTarget:self action:@selector(saveTapped) forControlEvents:UIControlEventTouchUpInside];
+    [bottomBar addSubview:saveBtn];
+
+    UIButton *copyBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    copyBtn.frame = CGRectMake(self.view.bounds.size.width - 160, 10, 140, 44);
+    copyBtn.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    [copyBtn setTitle:@" Sao chép ảnh" forState:UIControlStateNormal];
+    [copyBtn setImage:[UIImage systemImageNamed:@"doc.on.doc"] forState:UIControlStateNormal];
+    [copyBtn setTintColor:[UIColor whiteColor]];
+    copyBtn.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+    [copyBtn addTarget:self action:@selector(copyTapped) forControlEvents:UIControlEventTouchUpInside];
+    [bottomBar addSubview:copyBtn];
+}
+
+- (void)closeTapped {
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)saveTapped {
+    if (self.photo) {
+        UIImageWriteToSavedPhotosAlbum(self.photo, self, @selector(image:didFinishSavingWithError:contextInfo:), nil);
+    }
+}
+
+- (void)image:(UIImage *)image didFinishSavingWithError:(NSError *)error contextInfo:(void *)contextInfo {
+    if (error) {
+        ZLModShowToast(@"Lỗi khi lưu ảnh vào Thư viện");
+    } else {
+        ZLModShowToast(@"Đã lưu ảnh vào Thư viện Ảnh");
+    }
+}
+
+- (void)copyTapped {
+    if (self.photo) {
+        [UIPasteboard generalPasteboard].image = self.photo;
+        ZLModShowToast(@"Đã sao chép ảnh vào bộ nhớ tạm");
+    }
+}
+
+@end
+
+static BOOL ZLModIsChatRecalled(id chat) {
+    if (!chat) return NO;
+    NSString *origText = ZLModSafeStringProperty(chat, sel_registerName("originTextRecallMsg"));
+    if (origText.length > 0) return YES;
+
+    SEL recallAllSel = sel_registerName("isRecalledOrFailOrRolledAll");
+    if ([chat respondsToSelector:recallAllSel]) {
+        if (((BOOL (*)(id, SEL))objc_msgSend)(chat, recallAllSel)) return YES;
+    }
+    SEL recallDelSel = sel_registerName("isRecallDelByMySelf");
+    if ([chat respondsToSelector:recallDelSel]) {
+        if (((BOOL (*)(id, SEL))objc_msgSend)(chat, recallDelSel)) return YES;
+    }
+    int64_t msgType = ZLModSafeInt64Property(chat, sel_registerName("messageType"), 0);
+    if (msgType == 51) return YES;
+
+    NSString *msg = ZLModSafeStringProperty(chat, sel_registerName("message"));
+    if ([msg localizedCaseInsensitiveContainsString:@"thu hồi"] ||
+        [msg localizedCaseInsensitiveContainsString:@"recalled"]) {
+        return YES;
+    }
+
+    int64_t gid = 0, cid = 0;
+    ZLModExtractChatEntityFields(chat, nil, &gid, &cid, NULL, NULL, NULL, NULL, NULL);
+    NSString *scope = ZLModCurrentAccountScope();
+    if ([[ZLModAntiRecallStore shared] recordForAccountScope:scope globalId:gid clientId:cid] != nil) {
+        return YES;
+    }
+    return NO;
+}
+
+static id ZLModMakeUnhideMenuItem(id template) {
+    Class vmClass = NSClassFromString(@"ContextMenuViewModel");
+    if (!vmClass) return nil;
+    id vm = [[vmClass alloc] init];
+    if (!vm) return nil;
+
+    if (template && [template isKindOfClass:vmClass]) {
+        static NSArray<NSArray<NSString *> *> *pairs;
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            pairs = @[
+                @[@"textColor", @"setTextColor:"],
+                @[@"iconColor", @"setIconColor:"],
+                @[@"disabledTextColor", @"setDisabledTextColor:"],
+                @[@"disabledIconColor", @"setDisabledIconColor:"],
+            ];
+        });
+        for (NSArray<NSString *> *pair in pairs) {
+            SEL getter = NSSelectorFromString(pair[0]);
+            SEL setter = NSSelectorFromString(pair[1]);
+            if (![template respondsToSelector:getter] || ![vm respondsToSelector:setter]) continue;
+            id value = ZLModSafeObjectProperty(template, getter);
+            if (value) ((void (*)(id, SEL, id))objc_msgSend)(vm, setter, value);
+        }
+    }
+
+    SEL setTextSel = sel_registerName("setText:");
+    if ([vm respondsToSelector:setTextSel]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(vm, setTextSel, @"Hiện");
+    }
+    SEL setMenuTypeSel = sel_registerName("setMenuType:");
+    if ([vm respondsToSelector:setMenuTypeSel]) {
+        ((void (*)(id, SEL, NSInteger))objc_msgSend)(vm, setMenuTypeSel, kZLModActionUnhideRecall);
+    }
+    UIImage *icon = [UIImage systemImageNamed:@"eye"];
+    if (!icon) icon = [UIImage systemImageNamed:@"eye.fill"];
+    if (icon) {
+        icon = [icon imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+        SEL setIconSel = sel_registerName("setIconImage:");
+        if ([vm respondsToSelector:setIconSel]) {
+            ((void (*)(id, SEL, id))objc_msgSend)(vm, setIconSel, icon);
+        }
+    }
+    return vm;
+}
+
+static void ZLModPresentRecalledMessageContent(id chat, id presenter) {
+    if (!chat) {
+        ZLModShowToast(@"Không tìm thấy thông tin tin nhắn");
+        return;
+    }
+
+    int64_t gid = 0, cid = 0;
+    NSString *msg = nil, *sName = nil, *sId = nil, *tid = nil;
+    NSTimeInterval ts = 0;
+    ZLModExtractChatEntityFields(chat, nil, &gid, &cid, &msg, &sName, &sId, &tid, &ts);
+
+    NSString *scope = ZLModCurrentAccountScope();
+    ZLModAntiRecallStore *store = [ZLModAntiRecallStore shared];
+
+    // Check store first
+    NSDictionary *rec = [store recordForAccountScope:scope globalId:gid clientId:cid];
+    NSString *decrypted = [store decryptMessageFromRecord:rec expectedScope:scope];
+
+    // Also check live snapshot
+    if (decrypted.length == 0) {
+        ZLModLiveMessageSnapshot *snap = [store liveSnapshotForAccountScope:scope globalId:gid clientId:cid];
+        if (snap.message.length > 0) {
+            decrypted = snap.message;
+            if (sName.length == 0) sName = snap.senderName;
+        }
+    }
+
+    // Check ChatEntity fields
+    if (decrypted.length == 0) {
+        for (NSString *s in @[@"originTextRecallMsg", @"originText"]) {
+            NSString *v = ZLModSafeStringProperty(chat, NSSelectorFromString(s));
+            if (v.length > 0 && ![v containsString:@"thu hồi"]) {
+                decrypted = v;
+                break;
+            }
+        }
+    }
+
+    // Check for photo/image
+    UIImage *photo = ZLModExtractPhotoFromChat(chat);
+
+    UIViewController *presentingVC = ZLModTopPresenterViewController();
+    if (!presentingVC && [presenter isKindOfClass:[UIView class]]) {
+        UIResponder *r = [(UIView *)presenter nextResponder];
+        while (r && ![r isKindOfClass:[UIViewController class]]) {
+            r = r.nextResponder;
+        }
+        presentingVC = (UIViewController *)r;
+    }
+    if (!presentingVC) presentingVC = ZLModTopPresenterViewController();
+    if (!presentingVC) {
+        ZLModShowToast(decrypted.length ? decrypted : @"Không tìm thấy nội dung trước thu hồi");
+        return;
+    }
+
+    NSString *displaySender = (sName.length > 0) ? sName : @"Người gửi";
+
+    if (photo) {
+        ZLModPhotoPreviewViewController *pvc = [[ZLModPhotoPreviewViewController alloc] init];
+        pvc.photo = photo;
+        pvc.senderName = displaySender;
+        pvc.modalPresentationStyle = UIModalPresentationFullScreen;
+        [presentingVC presentViewController:pvc animated:YES completion:nil];
+        return;
+    }
+
+    NSString *displayText = (decrypted.length > 0) ? decrypted : @"Tin nhắn đã được thu hồi trước khi ZLMod kịp ghi nhận.";
+
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"Tin nhắn đã thu hồi — %@", displaySender]
+                                                                   message:displayText
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Sao chép" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [UIPasteboard generalPasteboard].string = displayText;
+        ZLModShowToast(@"Đã sao chép nội dung tin nhắn");
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Đóng" style:UIAlertActionStyleCancel handler:nil]];
+    [presentingVC presentViewController:alert animated:YES completion:nil];
 }
 
 void ZLModAntiRecallInstall(void) {
@@ -715,6 +1015,72 @@ void ZLModAntiRecallInstall(void) {
 
                 NSString *notice = [[ZLModAntiRecallStore shared] formattedNoticeForGlobalId:gid clientId:cid];
                 return (notice.length > 0) ? notice : origPreview;
+            })) {
+                installed++;
+            }
+        }
+    }
+
+    // 4. MenuButton hooks for Chat Bubble "Hiện" button
+    Class menuBtnCls = NSClassFromString(@"MenuButton");
+    if (menuBtnCls) {
+        SEL showMenuSel = sel_registerName("showContextMenuViewWithMenuItemArray:hasReaction:");
+        if (ZLModClassHasInstanceMethod(menuBtnCls, showMenuSel)) {
+            IMP orig = class_getMethodImplementation(menuBtnCls, showMenuSel);
+            if (ZLModReplaceMethod(menuBtnCls, showMenuSel, 2, "v", ^(id selfObj, id itemArray, BOOL hasReaction) {
+                NSArray *finalArray = itemArray;
+                @try {
+                    if ([[ZLModPreferences shared] boolForKey:kZLModAntiRecall]) {
+                        id chat = ZLModSafeObjectProperty(selfObj, sel_registerName("chatEntity"));
+                        if (chat && ZLModIsChatRecalled(chat)) {
+                            NSMutableArray *mutableItems = [itemArray isKindOfClass:[NSArray class]]
+                                ? [itemArray mutableCopy]
+                                : [NSMutableArray array];
+
+                            BOOL alreadyHasUnhide = NO;
+                            for (id it in mutableItems) {
+                                if (ZLModSafeInt64Property(it, sel_registerName("menuType"), 0) == kZLModActionUnhideRecall) {
+                                    alreadyHasUnhide = YES;
+                                    break;
+                                }
+                            }
+                            if (!alreadyHasUnhide) {
+                                id template = mutableItems.firstObject;
+                                id unhideItem = ZLModMakeUnhideMenuItem(template);
+                                if (unhideItem) {
+                                    [mutableItems insertObject:unhideItem atIndex:0];
+                                }
+                            }
+                            finalArray = mutableItems;
+                        }
+                    }
+                } @catch (__unused NSException *e) {}
+
+                if (orig) {
+                    ((void (*)(id, SEL, id, BOOL))orig)(selfObj, showMenuSel, finalArray, hasReaction);
+                }
+            })) {
+                installed++;
+            }
+        }
+
+        SEL tapSel = sel_registerName("contextMenuView:didTapAtItemType:");
+        if (ZLModClassHasInstanceMethod(menuBtnCls, tapSel)) {
+            IMP orig = class_getMethodImplementation(menuBtnCls, tapSel);
+            if (ZLModReplaceMethod(menuBtnCls, tapSel, 2, "v", ^(id selfObj, id menuView, NSInteger itemType) {
+                if (itemType == kZLModActionUnhideRecall) {
+                    id chat = ZLModSafeObjectProperty(selfObj, sel_registerName("chatEntity"));
+                    ZLModPresentRecalledMessageContent(chat, selfObj);
+
+                    SEL dismissSel = sel_registerName("contextMenuViewWillDismiss:");
+                    if ([selfObj respondsToSelector:dismissSel]) {
+                        ((void (*)(id, SEL, id))objc_msgSend)(selfObj, dismissSel, menuView);
+                    }
+                    return;
+                }
+                if (orig) {
+                    ((void (*)(id, SEL, id, NSInteger))orig)(selfObj, tapSel, menuView, itemType);
+                }
             })) {
                 installed++;
             }

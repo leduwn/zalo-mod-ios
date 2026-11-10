@@ -126,21 +126,6 @@ void ZLModShowToast(NSString *message) {
     }];
 }
 
-static UIViewController *ZLModTopPresenterViewController(void) {
-    UIWindow *win = ZLModActiveKeyWindow();
-    UIViewController *top = win.rootViewController;
-    while (top.presentedViewController && !top.presentedViewController.isBeingDismissed) {
-        top = top.presentedViewController;
-    }
-    if ([top isKindOfClass:[UINavigationController class]]) {
-        UINavigationController *nav = (UINavigationController *)top;
-        if (nav.visibleViewController) top = nav.visibleViewController;
-    } else if ([top isKindOfClass:[UITabBarController class]]) {
-        UITabBarController *tab = (UITabBarController *)top;
-        if (tab.selectedViewController) top = tab.selectedViewController;
-    }
-    return top;
-}
 
 #pragma mark - Session registry
 
@@ -369,6 +354,31 @@ static id ZLModMakeContextMenuViewModel(NSInteger actionId,
     return vm;
 }
 
+static id ZLModMakeContextMenuAction(NSInteger actionId,
+                                     NSString *title,
+                                     NSString *symbolName,
+                                     ZLModMenuSession *session,
+                                     id template) {
+    Class modernActionCls = NSClassFromString(@"_TtC13ZAContextMenu19ZAContextMenuAction");
+    if (modernActionCls) {
+        UIImage *icon = symbolName.length > 0 ? [UIImage systemImageNamed:symbolName] : nil;
+        if (!icon) icon = [UIImage systemImageNamed:@"circle"];
+
+        SEL initSel = sel_registerName("initWithActionId:title:image:style:");
+        if ([modernActionCls instancesRespondToSelector:initSel]) {
+            id action = [modernActionCls alloc];
+            action = ((id (*)(id, SEL, NSInteger, id, id, NSInteger))objc_msgSend)(
+                action, initSel, actionId, title ?: @"", icon, (NSInteger)0);
+            if (action && session) {
+                objc_setAssociatedObject(action, kZLModMenuSessionAssocKey, session, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            return action;
+        }
+    }
+
+    return ZLModMakeContextMenuViewModel(actionId, title, symbolName, session, template);
+}
+
 #pragma mark - Unread blue-dot rendering on inbox cells
 
 static NSString *ZLModResolveThreadIdForCell(UIView *cell) {
@@ -526,12 +536,15 @@ static NSUInteger ZLModInstallInboxContextMenuHooks(void) {
             if (![origList isKindOfClass:[NSArray class]]) return origList;
             if (!ZLModIsEligibleInboxMessageItem(item)) return origList;
 
+            Class modernActionCls = NSClassFromString(@"_TtC13ZAContextMenu19ZAContextMenuAction");
             Class vmCls = NSClassFromString(@"ContextMenuViewModel");
             id template = nil;
-            for (id candidate in (NSArray *)origList) {
-                if (vmCls && [candidate isKindOfClass:vmCls]) { template = candidate; break; }
+            if (vmCls) {
+                for (id candidate in (NSArray *)origList) {
+                    if ([candidate isKindOfClass:vmCls]) { template = candidate; break; }
+                }
             }
-            if (!template) return origList; // never inject rows we cannot style like native ones
+            if (!modernActionCls && !template) return origList; // never inject rows we cannot style like native ones
 
             NSString *tid = ZLModExtractThreadIdFromInboxItem(item);
             NSString *scope = ZLModCurrentAccountScope();
@@ -555,26 +568,26 @@ static NSUInteger ZLModInstallInboxContextMenuHooks(void) {
             BOOL hasNote = ([[ZLModPrivateNotesStore shared] noteForThreadId:tid].length > 0);
 
             NSMutableArray *combined = [(NSArray *)origList mutableCopy];
-            id a1 = ZLModMakeContextMenuViewModel(kZLModActionToggleSeen,
-                                                  hideSeen ? @"Tắt Ẩn đã xem (Đang bật)" : @"Bật Ẩn đã xem cuộc trò chuyện",
-                                                  hideSeen ? @"eye.fill" : @"eye.slash",
-                                                  session,
-                                                  template);
-            id a2 = ZLModMakeContextMenuViewModel(kZLModActionToggleTyping,
-                                                  hideTyping ? @"Tắt Ẩn đang nhập (Đang bật)" : @"Bật Ẩn đang nhập cuộc trò chuyện",
-                                                  hideTyping ? @"keyboard" : @"keyboard.chevron.compact.down",
-                                                  session,
-                                                  template);
-            id a3 = ZLModMakeContextMenuViewModel(kZLModActionToggleUnread,
-                                                  unread ? @"Bỏ đánh dấu chưa đọc" : @"Đánh dấu chưa đọc (Chấm xanh)",
-                                                  unread ? @"envelope.open" : @"envelope.badge",
-                                                  session,
-                                                  template);
-            id a4 = ZLModMakeContextMenuViewModel(kZLModActionPrivateNote,
-                                                  hasNote ? @"Ghi chú riêng tư (Đã có)" : @"Thêm ghi chú riêng tư...",
-                                                  hasNote ? @"note.text" : @"note.text.badge.plus",
-                                                  session,
-                                                  template);
+            id a1 = ZLModMakeContextMenuAction(kZLModActionToggleSeen,
+                                               hideSeen ? @"Tắt Ẩn đã xem (Đang bật)" : @"Bật Ẩn đã xem cuộc trò chuyện",
+                                               hideSeen ? @"eye.fill" : @"eye.slash",
+                                               session,
+                                               template);
+            id a2 = ZLModMakeContextMenuAction(kZLModActionToggleTyping,
+                                               hideTyping ? @"Tắt Ẩn đang nhập (Đang bật)" : @"Bật Ẩn đang nhập cuộc trò chuyện",
+                                               hideTyping ? @"keyboard" : @"keyboard.chevron.compact.down",
+                                               session,
+                                               template);
+            id a3 = ZLModMakeContextMenuAction(kZLModActionToggleUnread,
+                                               unread ? @"Bỏ đánh dấu chưa đọc" : @"Đánh dấu chưa đọc (Chấm xanh)",
+                                               unread ? @"envelope.open" : @"envelope.badge",
+                                               session,
+                                               template);
+            id a4 = ZLModMakeContextMenuAction(kZLModActionPrivateNote,
+                                               hasNote ? @"Ghi chú riêng tư (Đã có)" : @"Thêm ghi chú riêng tư...",
+                                               hasNote ? @"note.text" : @"note.text.badge.plus",
+                                               session,
+                                               template);
             if (a1) [combined addObject:a1];
             if (a2) [combined addObject:a2];
             if (a3) [combined addObject:a3];

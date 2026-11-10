@@ -42,17 +42,11 @@ static UITabBar *ZLModResolveTabBar(UIViewController *controller) {
 }
 
 static void ZLModGlassRemove(void) {
-    UIView *overlay = gOverlay;
-    if (overlay) {
-        [overlay removeFromSuperview];
-        ZLMOD_LOG(@"glass overlay removed");
-    }
-    gOverlay = nil;
-
     UITabBar *bar = gStyledBar;
     if (bar && gSavedAppearanceValid) {
         bar.standardAppearance = gSavedStandard ?: [[UITabBarAppearance alloc] init];
         bar.scrollEdgeAppearance = gSavedScrollEdge;
+        ZLMOD_LOG(@"glass appearance restored");
     }
     gSavedStandard = nil;
     gSavedScrollEdge = nil;
@@ -76,12 +70,9 @@ static void ZLModGlassApply(void) {
         UITabBar *bar = ZLModResolveTabBar((UIViewController *)vc);
         if (!bar) return;
 
-        UIView *existing = gOverlay;
-        if (existing && existing.superview == bar && gStyledBar == bar) {
-            existing.frame = bar.bounds;
+        if (gStyledBar == bar && gSavedAppearanceValid) {
             return;
         }
-        if (existing) ZLModGlassRemove();
 
         // Keep the original appearance so switching the feature off restores it exactly.
         gSavedStandard = [bar.standardAppearance copy];
@@ -89,27 +80,13 @@ static void ZLModGlassApply(void) {
         gSavedAppearanceValid = YES;
         gStyledBar = bar;
 
-        UITabBarAppearance *clear = [bar.standardAppearance copy] ?: [[UITabBarAppearance alloc] init];
-        [clear configureWithTransparentBackground];
-        bar.standardAppearance = clear;
-        bar.scrollEdgeAppearance = clear;
-
-        UIVisualEffectView *glass = [[UIVisualEffectView alloc]
-            initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial]];
-        glass.tag = kZLModGlassOverlayTag;
-        glass.frame = bar.bounds;
-        glass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        glass.userInteractionEnabled = NO; // never intercepts navigation touches
-
-        UIView *hairline = [[UIView alloc] initWithFrame:CGRectMake(0, 0, bar.bounds.size.width, 0.5)];
-        hairline.backgroundColor = [UIColor separatorColor];
-        hairline.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleBottomMargin;
-        hairline.alpha = 0.6;
-        [glass.contentView addSubview:hairline];
-
-        [bar insertSubview:glass atIndex:0];
-        gOverlay = glass;
-        ZLMOD_LOG(@"glass overlay applied — %@", ZLModGlassMaterialDescription());
+        UITabBarAppearance *glassApp = [bar.standardAppearance copy] ?: [[UITabBarAppearance alloc] init];
+        [glassApp configureWithDefaultBackground];
+        glassApp.backgroundEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial];
+        glassApp.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.12];
+        bar.standardAppearance = glassApp;
+        bar.scrollEdgeAppearance = glassApp;
+        ZLMOD_LOG(@"glass appearance applied natively — %@", ZLModGlassMaterialDescription());
     } @finally {
         gApplying = NO;
     }

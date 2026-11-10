@@ -224,3 +224,19 @@ UIWindow *ZLModActiveKeyWindow(void) {
     }
     return fallback;
 }
+
+UIViewController *ZLModTopPresenterViewController(void) {
+    UIWindow *win = ZLModActiveKeyWindow();
+    UIViewController *top = win.rootViewController;
+    while (top.presentedViewController && !top.presentedViewController.isBeingDismissed) {
+        top = top.presentedViewController;
+    }
+    if ([top isKindOfClass:[UINavigationController class]]) {
+        UINavigationController *nav = (UINavigationController *)top;
+        if (nav.visibleViewController) top = nav.visibleViewController;
+    } else if ([top isKindOfClass:[UITabBarController class]]) {
+        UITabBarController *tab = (UITabBarController *)top;
+        if (tab.selectedViewController) top = tab.selectedViewController;
+    }
+    return top;
+}
