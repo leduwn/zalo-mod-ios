@@ -285,12 +285,48 @@ static BOOL ZLModIsEligibleInboxMessageItem(id item) {
     return YES;
 }
 
+// Copies every visual attribute the native menu renderer dereferences (ZDSColor
+// text/icon colors, disabled colors, promote type, padding) from a genuine model so the
+// injected rows are structurally identical to Zalo's own rows. Rows built with nil
+// ZDSColor values crash the renderer as soon as the menu is shown.
+static void ZLModCopyMenuAppearance(id from, id to) {
+    static NSArray<NSArray<NSString *> *> *pairs;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        pairs = @[
+            @[@"textColor", @"setTextColor:"],
+            @[@"iconColor", @"setIconColor:"],
+            @[@"disabledTextColor", @"setDisabledTextColor:"],
+            @[@"disabledIconColor", @"setDisabledIconColor:"],
+        ];
+    });
+    for (NSArray<NSString *> *pair in pairs) {
+        SEL getter = NSSelectorFromString(pair[0]);
+        SEL setter = NSSelectorFromString(pair[1]);
+        if (!ZLModClassHasInstanceMethod(object_getClass(from), getter) ||
+            !ZLModClassHasInstanceMethod(object_getClass(to), setter)) continue;
+        id value = ZLModSafeObjectProperty(from, getter);
+        if (value) ((void (*)(id, SEL, id))objc_msgSend)(to, setter, value);
+    }
+    SEL setPromote = sel_registerName("setPromoteType:");
+    if (ZLModClassHasInstanceMethod(object_getClass(to), setPromote)) {
+        ((void (*)(id, SEL, NSInteger))objc_msgSend)(to, setPromote,
+            (NSInteger)ZLModSafeInt64Property(from, sel_registerName("promoteType"), 0));
+    }
+    SEL setPad = sel_registerName("setTopTextPadding:");
+    if (ZLModClassHasInstanceMethod(object_getClass(to), setPad)) {
+        ((void (*)(id, SEL, double))objc_msgSend)(to, setPad,
+            ZLModSafeDoubleProperty(from, sel_registerName("topTextPadding"), 0.0));
+    }
+}
+
 static id ZLModMakeContextMenuViewModel(NSInteger actionId,
                                         NSString *title,
                                         NSString *symbolName,
-                                        ZLModMenuSession *session) {
+                                        ZLModMenuSession *session,
+                                        id template) {
     Class vmClass = NSClassFromString(@"ContextMenuViewModel");
-    if (!vmClass) return nil;
+    if (!vmClass || !template) return nil;
 
     id vm = nil;
     @try {
@@ -299,6 +335,7 @@ static id ZLModMakeContextMenuViewModel(NSInteger actionId,
         return nil;
     }
     if (!vm) return nil;
+    ZLModCopyMenuAppearance(template, vm);
 
     SEL setTextSel = sel_registerName("setText:");
     if ([vm respondsToSelector:setTextSel]) {
@@ -310,8 +347,10 @@ static id ZLModMakeContextMenuViewModel(NSInteger actionId,
         ((void (*)(id, SEL, NSInteger))objc_msgSend)(vm, setMenuTypeSel, actionId);
     }
 
-    if (symbolName.length > 0) {
-        UIImage *icon = [UIImage systemImageNamed:symbolName];
+    {
+        UIImage *icon = symbolName.length > 0 ? [UIImage systemImageNamed:symbolName] : nil;
+        if (!icon) icon = [UIImage systemImageNamed:@"circle"];
+        icon = [icon imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
         SEL setIconSel = sel_registerName("setIconImage:");
         if (icon && [vm respondsToSelector:setIconSel]) {
             ((void (*)(id, SEL, id))objc_msgSend)(vm, setIconSel, icon);
@@ -487,6 +526,13 @@ static NSUInteger ZLModInstallInboxContextMenuHooks(void) {
             if (![origList isKindOfClass:[NSArray class]]) return origList;
             if (!ZLModIsEligibleInboxMessageItem(item)) return origList;
 
+            Class vmCls = NSClassFromString(@"ContextMenuViewModel");
+            id template = nil;
+            for (id candidate in (NSArray *)origList) {
+                if (vmCls && [candidate isKindOfClass:vmCls]) { template = candidate; break; }
+            }
+            if (!template) return origList; // never inject rows we cannot style like native ones
+
             NSString *tid = ZLModExtractThreadIdFromInboxItem(item);
             NSString *scope = ZLModCurrentAccountScope();
             if (tid.length == 0 || scope.length == 0) return origList;
@@ -512,19 +558,23 @@ static NSUInteger ZLModInstallInboxContextMenuHooks(void) {
             id a1 = ZLModMakeContextMenuViewModel(kZLModActionToggleSeen,
                                                   hideSeen ? @"Tắt Ẩn đã xem (Đang bật)" : @"Bật Ẩn đã xem cuộc trò chuyện",
                                                   hideSeen ? @"eye.fill" : @"eye.slash",
-                                                  session);
+                                                  session,
+                                                  template);
             id a2 = ZLModMakeContextMenuViewModel(kZLModActionToggleTyping,
                                                   hideTyping ? @"Tắt Ẩn đang nhập (Đang bật)" : @"Bật Ẩn đang nhập cuộc trò chuyện",
                                                   hideTyping ? @"keyboard" : @"keyboard.chevron.compact.down",
-                                                  session);
+                                                  session,
+                                                  template);
             id a3 = ZLModMakeContextMenuViewModel(kZLModActionToggleUnread,
                                                   unread ? @"Bỏ đánh dấu chưa đọc" : @"Đánh dấu chưa đọc (Chấm xanh)",
                                                   unread ? @"envelope.open" : @"envelope.badge",
-                                                  session);
+                                                  session,
+                                                  template);
             id a4 = ZLModMakeContextMenuViewModel(kZLModActionPrivateNote,
                                                   hasNote ? @"Ghi chú riêng tư (Đã có)" : @"Thêm ghi chú riêng tư...",
                                                   hasNote ? @"note.text" : @"note.text.badge.plus",
-                                                  session);
+                                                  session,
+                                                  template);
             if (a1) [combined addObject:a1];
             if (a2) [combined addObject:a2];
             if (a3) [combined addObject:a3];

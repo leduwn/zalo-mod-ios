@@ -53,8 +53,7 @@ class Phase2ContractTests(unittest.TestCase):
         self.assertIn('ZLModReplaceMethod(mgrClass, selectSel, 3, "v"', menu)
         self.assertIn('UXInboxMessageCell', menu)
         self.assertIn('ChatListItemCell', menu)
-        self.assertNotIn('setTextColor:', menu)
-        self.assertNotIn('setIconColor:', menu)
+        self.assertIn('ZLModCopyMenuAppearance', menu)
 
     def test_anti_recall_is_non_mutating_and_labels_local_copy(self):
         anti = (SOURCES / "ZLModAntiRecall.m").read_text(encoding="utf-8")

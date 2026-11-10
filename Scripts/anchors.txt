@@ -28,6 +28,8 @@ sel	setListItem:
 sel	prepareForReuse
 sel	didLoadChats:config:
 sel	updateDBWhenRecalledChats:completion:
+sel	addChats:byUserId:willAlert:fromSrc:
+sel	addChat:byUserId:willAlert:fromSrc:
 sel	_getRecalledMsgPreviewFromSource:
 sel	sendChat:checkUpload:
 sel	didLogout

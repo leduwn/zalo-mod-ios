@@ -576,6 +576,25 @@ static void ZLModEnumerateChatEntities(id container, void (^block)(id entity)) {
     block(container);
 }
 
+static void ZLModSnapshotEntities(id container, NSString *fallbackThreadId) {
+    ZLModEnumerateChatEntities(container, ^(id entity) {
+        int64_t gid = 0, cid = 0;
+        NSString *msg = nil, *sName = nil, *sId = nil, *tid = nil;
+        NSTimeInterval ts = 0;
+        ZLModExtractChatEntityFields(entity, fallbackThreadId, &gid, &cid, &msg, &sName, &sId, &tid, &ts);
+        if ((gid > 0 || cid > 0) && msg.length > 0 && ![msg hasPrefix:ZLModAntiRecallNoticePrefix] &&
+            ![msg hasPrefix:@"Tin nhắn đã được thu hồi"]) {
+            [[ZLModAntiRecallStore shared] cacheLiveSnapshotWithGlobalId:gid
+                                                                clientId:cid
+                                                                 message:msg
+                                                              senderName:sName
+                                                                senderId:sId
+                                                                threadId:tid
+                                                               timestamp:ts];
+        }
+    });
+}
+
 void ZLModAntiRecallInstall(void) {
     NSUInteger installed = 0;
 
@@ -588,21 +607,7 @@ void ZLModAntiRecallInstall(void) {
             if (ZLModReplaceMethod(convModelCls, didLoadSel, 2, "v", ^(id selfObj, id chats, id config) {
                 if ([[ZLModPreferences shared] boolForKey:kZLModAntiRecall] && chats) {
                     NSString *convTid = ZLModSafeStringProperty(selfObj, sel_registerName("threadId"));
-                    ZLModEnumerateChatEntities(chats, ^(id entity) {
-                        int64_t gid = 0, cid = 0;
-                        NSString *msg = nil, *sName = nil, *sId = nil, *tid = nil;
-                        NSTimeInterval ts = 0;
-                        ZLModExtractChatEntityFields(entity, convTid, &gid, &cid, &msg, &sName, &sId, &tid, &ts);
-                        if ((gid > 0 || cid > 0) && msg.length > 0) {
-                            [[ZLModAntiRecallStore shared] cacheLiveSnapshotWithGlobalId:gid
-                                                                                clientId:cid
-                                                                                 message:msg
-                                                                              senderName:sName
-                                                                                senderId:sId
-                                                                                threadId:tid
-                                                                               timestamp:ts];
-                        }
-                    });
+                    ZLModSnapshotEntities(chats, convTid);
                 }
                 if (orig) ((void (*)(id, SEL, id, id))orig)(selfObj, didLoadSel, chats, config);
             })) {
@@ -628,15 +633,18 @@ void ZLModAntiRecallInstall(void) {
 
                         ZLModLiveMessageSnapshot *cached = [store liveSnapshotForAccountScope:scope globalId:gid clientId:cid];
                         if (cached) {
-                            if (msg.length == 0 || [msg hasPrefix:ZLModAntiRecallNoticePrefix]) {
-                                msg = cached.message;
-                            }
+                            // The entity may already carry Zalo's recalled placeholder; the
+                            // pre-recall snapshot is always the authoritative original text.
+                            if (cached.message.length > 0) msg = cached.message;
                             if (sName.length == 0) sName = cached.senderName;
                             if (sId.length == 0) sId = cached.senderId;
                             if (tid.length == 0) tid = cached.threadId;
                             if (ts <= 0) ts = cached.timestamp;
                         }
-                        if ((gid > 0 || cid > 0) && msg.length > 0) {
+                        BOOL looksRecalled = (!cached &&
+                            ([msg localizedCaseInsensitiveContainsString:@"thu hồi"] ||
+                             [msg localizedCaseInsensitiveContainsString:@"recalled"]));
+                        if ((gid > 0 || cid > 0) && msg.length > 0 && !looksRecalled) {
                             [store saveSnapshotWithGlobalId:gid
                                                    clientId:cid
                                                     message:msg
@@ -648,6 +656,42 @@ void ZLModAntiRecallInstall(void) {
                     });
                 }
                 if (orig) ((void (*)(id, SEL, id, id))orig)(selfObj, recallSel, recalledChats, completion);
+            })) {
+                installed++;
+            }
+        }
+    }
+
+    // 2b. ChatDataManager incoming-message entry points. Messages that arrive while the
+    // app is running never pass through didLoadChats:, so the original text must be
+    // snapshotted here, before any later recall rewrites the entity.
+    Class chatMgrCls = NSClassFromString(@"ChatDataManager");
+    if (chatMgrCls) {
+        // -addChats:byUserId:willAlert:fromSrc: [v44@0:8@16@24B32q36]
+        SEL addChatsSel = sel_registerName("addChats:byUserId:willAlert:fromSrc:");
+        if (ZLModClassHasInstanceMethod(chatMgrCls, addChatsSel)) {
+            IMP orig = class_getMethodImplementation(chatMgrCls, addChatsSel);
+            if (ZLModReplaceMethod(chatMgrCls, addChatsSel, 4, "v",
+                                   ^(id selfObj, id chats, id userId, BOOL willAlert, NSInteger src) {
+                if ([[ZLModPreferences shared] boolForKey:kZLModAntiRecall] && chats) {
+                    ZLModSnapshotEntities(chats, nil);
+                }
+                if (orig) ((void (*)(id, SEL, id, id, BOOL, NSInteger))orig)(selfObj, addChatsSel, chats, userId, willAlert, src);
+            })) {
+                installed++;
+            }
+        }
+
+        // -addChat:byUserId:willAlert:fromSrc: [v44@0:8@16@24B32q36]
+        SEL addChatSel = sel_registerName("addChat:byUserId:willAlert:fromSrc:");
+        if (ZLModClassHasInstanceMethod(chatMgrCls, addChatSel)) {
+            IMP orig = class_getMethodImplementation(chatMgrCls, addChatSel);
+            if (ZLModReplaceMethod(chatMgrCls, addChatSel, 4, "v",
+                                   ^(id selfObj, id chat, id userId, BOOL willAlert, NSInteger src) {
+                if ([[ZLModPreferences shared] boolForKey:kZLModAntiRecall] && chat) {
+                    ZLModSnapshotEntities(chat, nil);
+                }
+                if (orig) ((void (*)(id, SEL, id, id, BOOL, NSInteger))orig)(selfObj, addChatSel, chat, userId, willAlert, src);
             })) {
                 installed++;
             }
